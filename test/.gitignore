@@ -1,0 +1,6 @@
+out/
+
+# For any missed llvm bytecode files
+*.bc
+# For any human readable files that someone might make for debugging
+*.ll
