@@ -99,6 +99,9 @@ fn translate_instruction(v: InstructionValue<'_>, e: &mut FunctionTranslationCon
         InstructionOpcode::Add => {
             e.emit_add();
         },
+        InstructionOpcode::Mul => {
+            e.emit_add();
+        },
         InstructionOpcode::Return => {
             e.emit_ret();
         }
@@ -136,6 +139,9 @@ impl FunctionTranslationContext<'_> {
     }
     fn emit_add(&mut self) {
         println!("ADD");
+    }
+    fn emit_mul(&mut self) {
+        println!("MUL");
     }
     fn emit_ret(&mut self) {
         println!("RET");
