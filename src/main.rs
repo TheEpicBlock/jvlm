@@ -100,7 +100,7 @@ fn translate_instruction(v: InstructionValue<'_>, e: &mut FunctionTranslationCon
             e.emit_add();
         },
         InstructionOpcode::Mul => {
-            e.emit_add();
+            e.emit_mul();
         },
         InstructionOpcode::Return => {
             e.emit_ret();
