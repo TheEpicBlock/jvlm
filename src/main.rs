@@ -79,6 +79,19 @@ fn translate_instruction<'ctx>(v: InstructionValue<'ctx>, e: &mut FunctionTransl
             v.get_operands().for_each(|o| translate_operand(o, e));
             e.emit_ret();
         },
+        InstructionOpcode::Select => {
+            if v.get_operand(0).is_some_and(|o| o.left().is_some_and(|o| o.as_instruction_value().is_some_and(|o| o.get_opcode() == InstructionOpcode::ICmp))) {
+                let icmp = v.get_operand(0).unwrap().unwrap_left().as_instruction_value().unwrap();
+                icmp.get_operands().for_each(|o| translate_operand(o, e));
+                let predicate = icmp.get_icmp_predicate().unwrap();
+                println!("IF_ICMP {predicate:?}");
+                translate_operand(v.get_operand(1), e);
+                println!("GOTO");
+                translate_operand(v.get_operand(2), e);
+            } else {
+                todo!();
+            }
+        }
         _ => todo!("{:?}", v)
     }
     store_result(v, e);
