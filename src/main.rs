@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env::args, path::Path};
 
-use inkwell::{context::Context, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, InstructionOpcode, InstructionValue}};
+use inkwell::{context::Context, llvm_sys::core::LLVMConstInt, values::{AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, InstructionOpcode, InstructionValue}};
 
 fn main() {
     let arg = &args().collect::<Vec<_>>()[1];
@@ -78,6 +78,8 @@ fn translate_immediately(v: AnyValueEnum<'_>, e: &mut FunctionTranslationContext
         AnyValueEnum::IntValue(int_value) => {
             if let Some(instr) = int_value.as_instruction() {
                 translate_instruction(instr, e);
+            } else if int_value.is_const() {
+                e.emit_const(int_value.get_sign_extended_constant().unwrap());
             } else {
                 dbg!(int_value);
                 todo!()
@@ -136,6 +138,9 @@ impl FunctionTranslationContext<'_> {
     }
     fn emit_load(&mut self, slot: u32) {
         println!("LOAD{slot}");
+    }
+    fn emit_const(&mut self, value: i64) {
+        println!("LDC{value}");
     }
     fn emit_add(&mut self) {
         println!("ADD");
