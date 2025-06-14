@@ -1,18 +1,39 @@
-use std::{collections::HashMap, env::args, path::Path};
+use std::{collections::HashMap, env::args, fs::File, io::BufWriter, path::Path};
 
+use classfile::{ClassFileWriter, MethodMetadata};
 use inkwell::{basic_block::BasicBlock, context::Context, llvm_sys::core::LLVMConstInt, values::{AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, InstructionOpcode, InstructionValue, IntValue}, Either};
 
 mod classfile;
 
 fn main() {
-    let arg = &args().collect::<Vec<_>>()[1];
-    let arg = Path::new(&arg);
-    let ctx = Context::create();
+    let args = &args().collect::<Vec<_>>();
+    let input = Path::new(&args[1]);
+    let output = Path::new(&args[2]);
 
-    println!("Reading {}", arg.display());
-    let m = inkwell::module::Module::parse_bitcode_from_path(arg, &ctx).unwrap();
-    for f in m.get_functions() {
-        println!("Read: {:?}", f.get_name());
+    println!("Reading {}", input.display());
+
+    let ctx = Context::create();
+    let input_bitcode = inkwell::module::Module::parse_bitcode_from_path(input, &ctx).unwrap();
+    
+    let output = BufWriter::new(File::create(output).unwrap());
+    let mut output_class = ClassFileWriter::write_classfile(output).unwrap();
+    
+    for f in input_bitcode.get_functions() {
+        println!("Translating function named: {:?}", f.get_name());
+        output_class.write_method(MethodMetadata {
+            visibility: classfile::Visibility::PUBLIC,
+            is_static: true,
+            is_final: true,
+            is_synchronized: false,
+            is_bridge: false,
+            is_varargs: false,
+            is_native: false,
+            is_abstract: false,
+            is_strictfp: true,
+            is_synthetic: false,
+            name: f.get_name().to_str().unwrap().to_owned(),
+            descriptor: "".to_owned(),
+        });
         for block in f.get_basic_blocks() {
             let mut translator = FunctionTranslationContext::from_params(f.get_params());
             let terminator = block.get_terminator().unwrap();
