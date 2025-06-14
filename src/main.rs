@@ -2,6 +2,8 @@ use std::{collections::HashMap, env::args, path::Path};
 
 use inkwell::{basic_block::BasicBlock, context::Context, llvm_sys::core::LLVMConstInt, values::{AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, InstructionOpcode, InstructionValue, IntValue}, Either};
 
+mod classfile;
+
 fn main() {
     let arg = &args().collect::<Vec<_>>()[1];
     let arg = Path::new(&arg);
