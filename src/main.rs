@@ -1,7 +1,7 @@
 use std::{collections::HashMap, env::args, io::Write, fs::File, io::BufWriter, path::Path};
 
-use classfile::{ClassFileWriter, ClassMetadata, JavaType, MethodMetadata, MethodWriter};
-use inkwell::{basic_block::BasicBlock, context::Context, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, InstructionOpcode, InstructionValue, IntValue}, Either};
+use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, ClassFileWriter, ClassMetadata, JavaType, MethodMetadata, MethodWriter};
+use inkwell::{basic_block::BasicBlock, context::Context, llvm_sys::{self, core::LLVMGetTypeKind}, types::{AnyType, AnyTypeEnum, AsTypeRef, BasicTypeEnum}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
 
 mod classfile;
 
@@ -25,7 +25,7 @@ fn main() {
         is_annotation: false,
         is_enum: false,
         is_module: false,
-        this_class: "Test".to_owned(),
+        this_class: "JvlmCode".to_owned(),
         super_class: "java/lang/Object".to_owned(),
     };
     let mut output_class = ClassFileWriter::write_classfile(output, output_metadata).unwrap();
@@ -44,7 +44,7 @@ fn main() {
             is_strictfp: true,
             is_synthetic: false,
             name: f.get_name().to_str().unwrap().to_owned(),
-            descriptor: "()V".to_owned(),
+            descriptor: get_descriptor(&f).to_string(),
         });
         let mut translator = FunctionTranslationContext::new(f.get_params(), method_writer);
         for block in f.get_basic_blocks() {
@@ -54,15 +54,46 @@ fn main() {
     }
 }
 
+fn get_descriptor(function: &FunctionValue<'_>) -> FunctionDescriptor {
+    let params = function.get_params().iter().map(|p| get_descriptor_entry(p.get_type().as_any_type_enum())).collect();
+    let return_ty = function.get_type().get_return_type().map(|t| get_descriptor_entry(t.as_any_type_enum()));
+    return FunctionDescriptor(params, return_ty);
+}
+
+fn get_descriptor_entry(v: AnyTypeEnum<'_>) -> DescriptorEntry {
+    match v {
+        AnyTypeEnum::ArrayType(_) => todo!(),
+        AnyTypeEnum::FloatType(float_type) => match unsafe {LLVMGetTypeKind(float_type.as_type_ref())} {
+            llvm_sys::LLVMTypeKind::LLVMFloatTypeKind => DescriptorEntry::Float,
+            llvm_sys::LLVMTypeKind::LLVMDoubleTypeKind => DescriptorEntry::Double,
+            _ => todo!("{:?}", unsafe {LLVMGetTypeKind(float_type.as_type_ref())})
+        },
+        AnyTypeEnum::FunctionType(_) => todo!(),
+        AnyTypeEnum::IntType(int_type) => match int_type.get_bit_width() {
+            1 => DescriptorEntry::Boolean,
+            1..=8 => DescriptorEntry::Byte,
+            9..=16 => DescriptorEntry::Short,
+            17..=32 => DescriptorEntry::Int,
+            33..=64 => DescriptorEntry::Long,
+            _ => todo!()
+        },
+        AnyTypeEnum::PointerType(_) => todo!(),
+        AnyTypeEnum::StructType(_) => todo!(),
+        AnyTypeEnum::VectorType(_) => todo!(),
+        AnyTypeEnum::ScalableVectorType(_) => todo!(),
+        AnyTypeEnum::VoidType(_) => panic!(),
+    }
+}
+
 fn translate<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx, 'class_writer, W>) {
     if let Some(info) = e.already_computed.get(&v) {
         // Instruction was already computed
-        e.java_method.emit_load(get_java_type(v), info.stored_in_slot);
+        e.java_method.emit_load(get_java_type(v.get_type()), info.stored_in_slot);
         return;
     }
 
     if let Some(i) = e.params.get(&v) {
-        e.java_method.emit_load(get_java_type(v), *i);
+        e.java_method.emit_load(get_java_type(v.get_type()), *i);
         return;
     }
     match v {
@@ -90,17 +121,17 @@ fn translate<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut Funct
 }
 
 /// Compute the type with which a node is stored/retrieved in the java local variable table
-fn get_java_type(v: AnyValueEnum<'_>) -> JavaType {
-    match v.get_type() {
-        inkwell::types::AnyTypeEnum::ArrayType(_) => JavaType::Reference,
-        inkwell::types::AnyTypeEnum::FloatType(_) => JavaType::Float,
-        inkwell::types::AnyTypeEnum::FunctionType(_) => todo!(),
-        inkwell::types::AnyTypeEnum::IntType(_) => JavaType::Int,
-        inkwell::types::AnyTypeEnum::PointerType(_) => JavaType::Reference,
-        inkwell::types::AnyTypeEnum::StructType(_) => JavaType::Reference,
-        inkwell::types::AnyTypeEnum::VectorType(_) => todo!(),
-        inkwell::types::AnyTypeEnum::ScalableVectorType(_) => todo!(),
-        inkwell::types::AnyTypeEnum::VoidType(_) => todo!(),
+fn get_java_type(v: AnyTypeEnum<'_>) -> JavaType {
+    match v {
+        AnyTypeEnum::ArrayType(_) => JavaType::Reference,
+        AnyTypeEnum::FloatType(_) => JavaType::Float,
+        AnyTypeEnum::FunctionType(_) => todo!(),
+        AnyTypeEnum::IntType(_) => JavaType::Int,
+        AnyTypeEnum::PointerType(_) => JavaType::Reference,
+        AnyTypeEnum::StructType(_) => JavaType::Reference,
+        AnyTypeEnum::VectorType(_) => todo!(),
+        AnyTypeEnum::ScalableVectorType(_) => todo!(),
+        AnyTypeEnum::VoidType(_) => todo!(),
     }
 }
 
@@ -110,7 +141,7 @@ fn store_result<'ctx, W: Write>(v: impl AnyValue<'ctx> + HasUsageInfo, e: &mut F
     if v.is_used_more_than_once() {
         let s = e.get_next_slot();
         e.java_method.emit_dup();
-        e.java_method.emit_store(get_java_type(v.as_any_value_enum()), s);
+        e.java_method.emit_store(get_java_type(v.as_any_value_enum().get_type()), s);
         e.already_computed.insert(v.as_any_value_enum(), InstructionStatus { stored_in_slot: s });
     }
 }

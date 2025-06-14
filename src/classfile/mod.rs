@@ -2,8 +2,10 @@ use std::{io::Write, io};
 use bytebuffer::ByteBuffer;
 use byteorder::WriteBytesExt;
 use constant_pool::{ConstantPool, ConstantPoolReference};
+use descriptor::DescriptorEntry;
 
 mod constant_pool;
+pub(crate) mod descriptor;
 
 pub struct ClassFileWriter<W: Write> {
     output: W,
@@ -282,4 +284,34 @@ pub enum JavaType {
     Float,
     Double,
     Reference
+}
+
+impl From<DescriptorEntry> for JavaType {
+    fn from(value: DescriptorEntry) -> Self {
+        match value {
+            DescriptorEntry::Byte => JavaType::Int,
+            DescriptorEntry::Char => JavaType::Int,
+            DescriptorEntry::Double => JavaType::Double,
+            DescriptorEntry::Float => JavaType::Float,
+            DescriptorEntry::Int => JavaType::Int,
+            DescriptorEntry::Long => JavaType::Long,
+            DescriptorEntry::Class(_) => JavaType::Reference,
+            DescriptorEntry::Short => JavaType::Int,
+            DescriptorEntry::Boolean => JavaType::Int,
+            DescriptorEntry::Array(_) => JavaType::Reference,
+        }
+    }
+}
+
+impl JavaType {
+    pub fn desc(&self) -> &'static str {
+        // TODO this needs to be changed
+        match self {
+            JavaType::Int => "I",
+            JavaType::Long => "J",
+            JavaType::Float => "F",
+            JavaType::Double => "D",
+            JavaType::Reference => panic!(),
+        }
+    }
 }
