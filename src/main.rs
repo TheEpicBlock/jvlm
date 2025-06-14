@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env::args, fs::File, io::BufWriter, path::Path};
 
-use classfile::{ClassFileWriter, MethodMetadata};
+use classfile::{ClassFileWriter, ClassMetadata, MethodMetadata};
 use inkwell::{basic_block::BasicBlock, context::Context, llvm_sys::core::LLVMConstInt, values::{AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, InstructionOpcode, InstructionValue, IntValue}, Either};
 
 mod classfile;
@@ -16,7 +16,19 @@ fn main() {
     let input_bitcode = inkwell::module::Module::parse_bitcode_from_path(input, &ctx).unwrap();
     
     let output = BufWriter::new(File::create(output).unwrap());
-    let mut output_class = ClassFileWriter::write_classfile(output).unwrap();
+    let output_metadata = ClassMetadata {
+        is_public: true,
+        is_final: true,
+        is_interface: false,
+        is_abstract: false,
+        is_synthetic: false,
+        is_annotation: false,
+        is_enum: false,
+        is_module: false,
+        this_class: "Test".to_owned(),
+        super_class: "java/lang/Object".to_owned(),
+    };
+    let mut output_class = ClassFileWriter::write_classfile(output, output_metadata).unwrap();
     
     for f in input_bitcode.get_functions() {
         println!("Translating function named: {:?}", f.get_name());
@@ -32,7 +44,7 @@ fn main() {
             is_strictfp: true,
             is_synthetic: false,
             name: f.get_name().to_str().unwrap().to_owned(),
-            descriptor: "".to_owned(),
+            descriptor: "()V".to_owned(),
         });
         for block in f.get_basic_blocks() {
             let mut translator = FunctionTranslationContext::from_params(f.get_params());

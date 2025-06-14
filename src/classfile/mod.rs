@@ -7,15 +7,26 @@ mod constant_pool;
 
 pub struct ClassFileWriter<W: Write> {
     output: W,
+    access_flag: u16,
+    this_ref: ConstantPoolReference,
+    super_ref: ConstantPoolReference,
     constant_pool: ConstantPool,
     methods: Vec<MethodData>,
 }
 
 impl <W> ClassFileWriter<W> where W: Write + WriteBytesExt {
-    pub fn write_classfile(output_stream: W) -> io::Result<Self> {
+    pub fn write_classfile(output_stream: W, metadata: ClassMetadata) -> io::Result<Self> {
+        let mut constant_pool = ConstantPool::default();
+        let access_flag = metadata.get_access_flag();
+        let this_ref = constant_pool.class(metadata.this_class);
+        let super_ref = constant_pool.class(metadata.super_class);
+
         let mut w = ClassFileWriter {
             output: output_stream,
-            constant_pool: ConstantPool::default(),
+            constant_pool,
+            access_flag,
+            this_ref,
+            super_ref,
             methods: Vec::new()
         };
         w.write_header()?;
@@ -33,8 +44,8 @@ impl <W> ClassFileWriter<W> where W: Write + WriteBytesExt {
         let method_index = self.methods.len();
 
         let access_flag = metadata.get_access_flag();
-        let name_ref = self.constant_pool.write_str(metadata.name);
-        let desc_ref = self.constant_pool.write_str(metadata.descriptor);
+        let name_ref = self.constant_pool.utf8(metadata.name);
+        let desc_ref = self.constant_pool.utf8(metadata.descriptor);
 
         self.methods.push(MethodData {
             access_flag,
@@ -52,11 +63,11 @@ impl <W> ClassFileWriter<W> where W: Write + WriteBytesExt {
 
 impl <W> Drop for ClassFileWriter<W> where W: Write {
     fn drop(&mut self) {
-        let code_attr = self.constant_pool.write_str("Code".to_string());
+        let code_attr = self.constant_pool.utf8("Code".to_string());
         self.constant_pool.serialize(&mut self.output).unwrap();
-        self.output.write_u16::<byteorder::BigEndian>(0).unwrap(); // TODO access flags
-        self.output.write_u16::<byteorder::BigEndian>(0).unwrap(); // TODO this class
-        self.output.write_u16::<byteorder::BigEndian>(0).unwrap(); // TODO super class
+        self.output.write_u16::<byteorder::BigEndian>(self.access_flag).unwrap();
+        self.output.write_u16::<byteorder::BigEndian>(self.this_ref).unwrap();
+        self.output.write_u16::<byteorder::BigEndian>(self.super_ref).unwrap();
         self.output.write_u16::<byteorder::BigEndian>(0).unwrap(); // No interfaces
         self.output.write_u16::<byteorder::BigEndian>(0).unwrap(); // No fields
         self.output.write_u16::<byteorder::BigEndian>(self.methods.len() as u16).unwrap();
@@ -64,6 +75,35 @@ impl <W> Drop for ClassFileWriter<W> where W: Write {
             m.serialize(&mut self.output, code_attr).unwrap();
         }
         self.output.write_u16::<byteorder::BigEndian>(0).unwrap(); // No attributes
+    }
+}
+
+pub struct ClassMetadata {
+    pub is_public: bool,
+    pub is_final: bool,
+    pub is_interface: bool,
+    pub is_abstract: bool,
+    pub is_synthetic: bool,
+    pub is_annotation: bool,
+    pub is_enum: bool,
+    pub is_module: bool,
+    pub this_class: String,
+    pub super_class: String,
+}
+
+impl ClassMetadata {
+    fn get_access_flag(&self) -> u16 {
+        let mut flag = 0;
+        if self.is_public     { flag |= 0x0001 };
+        if self.is_final      { flag |= 0x0010 };
+        flag |= 0x0020; // is_super
+        if self.is_interface  { flag |= 0x0200 };
+        if self.is_abstract   { flag |= 0x0400 };
+        if self.is_synthetic  { flag |= 0x1000 };
+        if self.is_annotation { flag |= 0x2000 };
+        if self.is_enum       { flag |= 0x4000 };
+        if self.is_module     { flag |= 0x8000 };
+        return flag;
     }
 }
 
