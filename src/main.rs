@@ -1,7 +1,7 @@
-use std::{collections::HashMap, env::args, fs::File, io::BufWriter, path::Path};
+use std::{collections::HashMap, env::args, io::Write, fs::File, io::BufWriter, path::Path};
 
-use classfile::{ClassFileWriter, ClassMetadata, MethodMetadata};
-use inkwell::{basic_block::BasicBlock, context::Context, llvm_sys::core::LLVMConstInt, values::{AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, InstructionOpcode, InstructionValue, IntValue}, Either};
+use classfile::{ClassFileWriter, ClassMetadata, JavaType, MethodMetadata, MethodWriter};
+use inkwell::{basic_block::BasicBlock, context::Context, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, InstructionOpcode, InstructionValue, IntValue}, Either};
 
 mod classfile;
 
@@ -32,7 +32,7 @@ fn main() {
     
     for f in input_bitcode.get_functions() {
         println!("Translating function named: {:?}", f.get_name());
-        output_class.write_method(MethodMetadata {
+        let method_writer = output_class.write_method(MethodMetadata {
             visibility: classfile::Visibility::PUBLIC,
             is_static: true,
             is_final: true,
@@ -46,23 +46,23 @@ fn main() {
             name: f.get_name().to_str().unwrap().to_owned(),
             descriptor: "()V".to_owned(),
         });
+        let mut translator = FunctionTranslationContext::new(f.get_params(), method_writer);
         for block in f.get_basic_blocks() {
-            let mut translator = FunctionTranslationContext::from_params(f.get_params());
             let terminator = block.get_terminator().unwrap();
             translate(terminator.as_any_value_enum(), &mut translator);
         }
     }
 }
 
-fn translate<'ctx>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx>) {
+fn translate<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx, 'class_writer, W>) {
     if let Some(info) = e.already_computed.get(&v) {
         // Instruction was already computed
-        e.emit_load(info.stored_in_slot);
+        e.java_method.emit_load(get_java_type(v), info.stored_in_slot);
         return;
     }
 
     if let Some(i) = e.params.get(&v) {
-        e.emit_load(*i);
+        e.java_method.emit_load(get_java_type(v), *i);
         return;
     }
     match v {
@@ -71,7 +71,7 @@ fn translate<'ctx>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ct
             if let Some(instr) = int_value.as_instruction() {
                 translate_instruction(instr, e);
             } else if int_value.is_const() {
-                e.emit_const(int_value.get_sign_extended_constant().unwrap());
+                e.java_method.emit_constant_int(int_value.get_sign_extended_constant().unwrap() as i32);
             } else {
                 dbg!(int_value);
                 todo!()
@@ -89,30 +89,45 @@ fn translate<'ctx>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ct
     }
 }
 
+/// Compute the type with which a node is stored/retrieved in the java local variable table
+fn get_java_type(v: AnyValueEnum<'_>) -> JavaType {
+    match v.get_type() {
+        inkwell::types::AnyTypeEnum::ArrayType(_) => JavaType::Reference,
+        inkwell::types::AnyTypeEnum::FloatType(_) => JavaType::Float,
+        inkwell::types::AnyTypeEnum::FunctionType(_) => todo!(),
+        inkwell::types::AnyTypeEnum::IntType(_) => JavaType::Int,
+        inkwell::types::AnyTypeEnum::PointerType(_) => JavaType::Reference,
+        inkwell::types::AnyTypeEnum::StructType(_) => JavaType::Reference,
+        inkwell::types::AnyTypeEnum::VectorType(_) => todo!(),
+        inkwell::types::AnyTypeEnum::ScalableVectorType(_) => todo!(),
+        inkwell::types::AnyTypeEnum::VoidType(_) => todo!(),
+    }
+}
+
 /// Should be called after any value was computed, to prevent things from being computed twice (with potential side-effects)
-fn store_result<'ctx>(v: impl AnyValue<'ctx> + HasUsageInfo, e: &mut FunctionTranslationContext<'ctx>) {
+fn store_result<'ctx, W: Write>(v: impl AnyValue<'ctx> + HasUsageInfo, e: &mut FunctionTranslationContext<'ctx, '_, W>) {
     // We only need to store results if the value is used more than once
     if v.is_used_more_than_once() {
         let s = e.get_next_slot();
-        e.emit_dup();
-        e.emit_store(s);
+        e.java_method.emit_dup();
+        e.java_method.emit_store(get_java_type(v.as_any_value_enum()), s);
         e.already_computed.insert(v.as_any_value_enum(), InstructionStatus { stored_in_slot: s });
     }
 }
 
-fn translate_instruction<'ctx>(v: InstructionValue<'ctx>, e: &mut FunctionTranslationContext<'ctx>) {
+fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut FunctionTranslationContext<'ctx, '_, W>) {
     match v.get_opcode() {
         InstructionOpcode::Add => {
             v.get_operands().for_each(|o| translate_operand(o, e));
-            e.emit_add();
+            e.java_method.emit_add(JavaType::Int); // TODO
         },
         InstructionOpcode::Mul => {
             v.get_operands().for_each(|o| translate_operand(o, e));
-            e.emit_mul();
+            e.java_method.emit_mul(JavaType::Int); // TODO
         },
         InstructionOpcode::Return => {
             v.get_operands().for_each(|o| translate_operand(o, e));
-            e.emit_ret();
+            e.java_method.emit_return(Some(JavaType::Int)); // TODO
         },
         InstructionOpcode::Select => {
             if v.get_operand(0).is_some_and(|o| o.left().is_some_and(|o| o.as_instruction_value().is_some_and(|o| o.get_opcode() == InstructionOpcode::ICmp))) {
@@ -132,7 +147,7 @@ fn translate_instruction<'ctx>(v: InstructionValue<'ctx>, e: &mut FunctionTransl
     store_result(v, e);
 }
 
-fn translate_operand<'ctx>(operand: Option<Either<BasicValueEnum<'ctx>, BasicBlock<'ctx>>>, e: &mut FunctionTranslationContext<'ctx>) {
+fn translate_operand<'ctx, W: Write>(operand: Option<Either<BasicValueEnum<'ctx>, BasicBlock<'ctx>>>, e: &mut FunctionTranslationContext<'ctx, '_, W>) {
     let operand = operand.unwrap();
     match operand {
         inkwell::Either::Left(operand) => {
@@ -142,47 +157,28 @@ fn translate_operand<'ctx>(operand: Option<Either<BasicValueEnum<'ctx>, BasicBlo
     }
 }
 
-struct FunctionTranslationContext<'ctx> {
-    params: HashMap<AnyValueEnum<'ctx>, u32>,
+struct FunctionTranslationContext<'ctx, 'class_writer, W: Write> {
+    params: HashMap<AnyValueEnum<'ctx>, u16>,
     already_computed: HashMap<AnyValueEnum<'ctx>, InstructionStatus>,
-    next_slot: u32
+    next_slot: u16,
+    java_method: MethodWriter<'class_writer, W>
 }
 
 struct InstructionStatus {
-    stored_in_slot: u32
+    stored_in_slot: u16
 }
 
-impl FunctionTranslationContext<'_> {
-    fn from_params<'ctx>(params: Vec<BasicValueEnum<'ctx>>) -> FunctionTranslationContext<'ctx> {
-        let next_slot = params.len() as u32;
+impl <W: Write> FunctionTranslationContext<'_, '_, W> {
+    fn new<'ctx, 'class_writer>(params: Vec<BasicValueEnum<'ctx>>, method: MethodWriter<'class_writer, W>) -> FunctionTranslationContext<'ctx, 'class_writer, W> {
+        let next_slot = params.len() as u16;
         return FunctionTranslationContext {
-            params: params.into_iter().enumerate().map(|(a,b)| (b.as_any_value_enum(),a as u32)).collect(),
+            params: params.into_iter().enumerate().map(|(a,b)| (b.as_any_value_enum(),a as u16)).collect(),
             already_computed: HashMap::new(),
+            java_method: method,
             next_slot,
         };
     }
-    fn emit_dup(&mut self) {
-        println!("DUP");
-    }
-    fn emit_store(&mut self, slot: u32) {
-        println!("STORE{slot}");
-    }
-    fn emit_load(&mut self, slot: u32) {
-        println!("LOAD{slot}");
-    }
-    fn emit_const(&mut self, value: i64) {
-        println!("LDC{value}");
-    }
-    fn emit_add(&mut self) {
-        println!("ADD");
-    }
-    fn emit_mul(&mut self) {
-        println!("MUL");
-    }
-    fn emit_ret(&mut self) {
-        println!("RET");
-    }
-    fn get_next_slot(&mut self) -> u32 {
+    fn get_next_slot(&mut self) -> u16 {
         let n = self.next_slot;
         self.next_slot += 1;
         return n;

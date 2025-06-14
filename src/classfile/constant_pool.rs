@@ -18,6 +18,9 @@ impl ConstantPool {
         let utf8 = self.utf8(str);
         self.entries.insert_full(ConstantPoolEntry::Class(utf8)).0 as ConstantPoolReference + 1
     }
+    pub fn int(&mut self, int: i32) -> ConstantPoolReference {
+        self.entries.insert_full(ConstantPoolEntry::Int(int)).0 as ConstantPoolReference + 1
+    }
 
     pub fn serialize(&self, output: &mut impl Write) -> io::Result<()> {
         output.write_u16::<byteorder::BigEndian>(self.entries.len() as u16 + 1)?;
@@ -32,6 +35,10 @@ impl ConstantPool {
                     output.write_u8(7)?;
                     output.write_u16::<byteorder::BigEndian>(*v)?;
                 },
+                ConstantPoolEntry::Int(i) => {
+                    output.write_u8(3)?;
+                    output.write_i32::<byteorder::BigEndian>(*i)?;
+                }
             }
         }
         Ok(())
@@ -41,5 +48,6 @@ impl ConstantPool {
 #[derive(Hash, PartialEq, Eq)]
 enum ConstantPoolEntry {
     Utf8(String),
-    Class(ConstantPoolReference)
+    Class(ConstantPoolReference),
+    Int(i32),
 }

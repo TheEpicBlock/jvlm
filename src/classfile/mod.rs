@@ -113,6 +113,100 @@ pub struct MethodWriter<'class_writer, W: Write> {
 }
 
 impl <W> MethodWriter<'_, W> where W: Write {
+    fn code(&mut self) -> &mut ByteBuffer {
+        return &mut self.class_writer.methods[self.method_index].code;
+    }
+
+    fn emit_opcode_referencing_local_var(&mut self, opcode: u8, index: u16) {
+        if let Some(index) = u8::try_from(index).ok() {
+            self.code().write_u8(opcode);
+            self.code().write_u8(index);
+        } else {
+            // the local variable index doesn't fit into a byte, need to use a wide 
+            self.code().write_u8(0xC4); // The WIDE opcode
+            self.code().write_u8(opcode);
+            self.code().write_u16(index);
+        }
+    }
+
+    fn emit_load_store_inner(&mut self, shorthand: u8, long_form: u8, index: u16) {
+        match index {
+            0 => self.code().write_u8(shorthand),
+            1 => self.code().write_u8(shorthand+1),
+            2 => self.code().write_u8(shorthand+2),
+            3 => self.code().write_u8(shorthand+3),
+            _ => self.emit_opcode_referencing_local_var(long_form, index),
+        }
+    }
+
+    pub fn emit_load(&mut self, ty: JavaType, index: u16) {
+        match ty {
+            JavaType::Int => self.emit_load_store_inner(0x1a, 0x15, index),
+            JavaType::Long => self.emit_load_store_inner(0x1e, 0x16, index),
+            JavaType::Float => self.emit_load_store_inner(0x22, 0x17, index),
+            JavaType::Double => self.emit_load_store_inner(0x26, 0x18, index),
+            JavaType::Reference => self.emit_load_store_inner(0x2a, 0x19, index),
+        }
+    }
+
+    pub fn emit_store(&mut self, ty: JavaType, index: u16) {
+        match ty {
+            JavaType::Int => self.emit_load_store_inner(0x3b, 0x36, index),
+            // JavaType::Long => self.emit_load_inner(0x1e, 0x16, index),
+            // JavaType::Float => self.emit_load_inner(0x22, 0x17, index),
+            // JavaType::Double => self.emit_load_inner(0x26, 0x18, index),
+            // JavaType::Reference => self.emit_load_inner(0x2a, 0x19, index),
+            _ => todo!()
+        }
+    }
+
+    pub fn emit_constant_int(&mut self, integer: i32) {
+        let r = self.class_writer.constant_pool.int(integer);
+        if let Some(r) = u8::try_from(r).ok() {
+            self.code().write_u8(0x12); //LDC
+            self.code().write_u8(r);
+        } else {
+            self.code().write_u8(0x13); //LDC_w
+            self.code().write_u16(r);
+        }
+    }
+
+    pub fn emit_return(&mut self, ty: Option<JavaType>) {
+        match ty {
+            Some(ty) => match ty {
+                JavaType::Int => self.code().write_u8(0xac),
+                JavaType::Long => self.code().write_u8(0xad),
+                JavaType::Float => self.code().write_u8(0xae),
+                JavaType::Double => self.code().write_u8(0xaf),
+                JavaType::Reference => self.code().write_u8(0xb0),
+            },
+            None => self.code().write_u8(0xb1), // Void return
+        }
+    }
+
+    pub fn emit_dup(&mut self) {
+        self.code().write_u8(0x59);
+    }
+
+    pub fn emit_add(&mut self, ty: JavaType) {
+        match ty {
+            JavaType::Int => self.code().write_u8(0x60),
+            JavaType::Long => todo!(),
+            JavaType::Float => todo!(),
+            JavaType::Double => todo!(),
+            JavaType::Reference => todo!(),
+        }
+    }
+
+    pub fn emit_mul(&mut self, ty: JavaType) {
+        match ty {
+            JavaType::Int => self.code().write_u8(0x68),
+            JavaType::Long => todo!(),
+            JavaType::Float => todo!(),
+            JavaType::Double => todo!(),
+            JavaType::Reference => todo!(),
+        }
+    }
 }
 
 pub struct MethodMetadata {
@@ -144,8 +238,13 @@ impl MethodData {
         writer.write_u16::<byteorder::BigEndian>(self.desc_ref)?;
         writer.write_u16::<byteorder::BigEndian>(1)?; // One attribute
         writer.write_u16::<byteorder::BigEndian>(code_attribute)?;
+        writer.write_u32::<byteorder::BigEndian>(self.code.as_bytes().len() as u32 + 12)?;
+        writer.write_u16::<byteorder::BigEndian>(50)?; // TODO: max-stack
+        writer.write_u16::<byteorder::BigEndian>(50)?; // TODO: max-locals
         writer.write_u32::<byteorder::BigEndian>(self.code.as_bytes().len() as u32)?;
         writer.write_all(self.code.as_bytes())?;
+        writer.write_u16::<byteorder::BigEndian>(0)?; // No exception table
+        writer.write_u16::<byteorder::BigEndian>(0)?; // No additional attributes
         Ok(())
     }
 }
@@ -174,4 +273,13 @@ pub enum Visibility {
     PUBLIC,
     PRIVATE,
     PROTECTED,
+}
+
+/// Represents a type inside of the java stack or the java local variable table
+pub enum JavaType {
+    Int,
+    Long,
+    Float,
+    Double,
+    Reference
 }
