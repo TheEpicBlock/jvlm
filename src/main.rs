@@ -8,7 +8,8 @@ mod classfile;
 fn main() {
     let args = &args().collect::<Vec<_>>();
     let input = Path::new(&args[1]);
-    let output = Path::new(&args[2]);
+    let output_class = args[2].to_owned();
+    let output = Path::new(&args[3]);
 
     println!("Reading {}", input.display());
 
@@ -25,7 +26,7 @@ fn main() {
         is_annotation: false,
         is_enum: false,
         is_module: false,
-        this_class: "JvlmCode".to_owned(),
+        this_class: output_class,
         super_class: "java/lang/Object".to_owned(),
     };
     let mut output_class = ClassFileWriter::write_classfile(output, output_metadata).unwrap();
