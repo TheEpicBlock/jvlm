@@ -1,0 +1,12 @@
+[package]
+name = "rustc_codegen_jvlm"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+
+[package.metadata.rust-analyzer]
+rustc_private = true
