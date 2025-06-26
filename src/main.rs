@@ -1,7 +1,7 @@
 use std::{collections::HashMap, env::args, io::Write, fs::File, io::BufWriter, path::Path};
 
-use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, ClassFileWriter, ClassMetadata, JavaType, MethodMetadata, MethodWriter};
-use inkwell::{basic_block::BasicBlock, context::Context, llvm_sys::{self, core::LLVMGetTypeKind}, types::{AnyType, AnyTypeEnum, AsTypeRef, BasicTypeEnum}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
+use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, JavaType, MethodWriter};
+use inkwell::{basic_block::BasicBlock, context::Context, llvm_sys::{self, core::LLVMGetTypeKind}, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
 use jvlm::{compile, options::JvlmCompileOptions};
 
 mod classfile;

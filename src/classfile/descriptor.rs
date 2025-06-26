@@ -1,4 +1,4 @@
-use std::fmt::{write, Debug, Display};
+use std::fmt::Display;
 
 pub enum DescriptorEntry {
     Byte,

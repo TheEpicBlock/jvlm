@@ -1,9 +1,9 @@
-use std::{collections::HashMap, env::args, fs::File, io::{BufWriter, Seek, Write}, path::Path};
+use std::{collections::HashMap, io::{Seek, Write}};
 
 use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, ClassFileWriter, ClassMetadata, JavaType, MethodMetadata, MethodWriter};
 use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
 use options::{FunctionNameMapper, JvlmCompileOptions};
-use zip::{write::{FileOptions, SimpleFileOptions}, ZipWriter};
+use zip::{write::SimpleFileOptions, ZipWriter};
 
 mod classfile;
 pub mod options;
