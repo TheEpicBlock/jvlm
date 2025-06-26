@@ -8,7 +8,7 @@ mod constant_pool;
 pub(crate) mod descriptor;
 
 pub struct ClassFileWriter<W: Write> {
-    output: W,
+    output: Option<W>,
     access_flag: u16,
     this_ref: ConstantPoolReference,
     super_ref: ConstantPoolReference,
@@ -24,7 +24,7 @@ impl <W> ClassFileWriter<W> where W: Write + WriteBytesExt {
         let super_ref = constant_pool.class(metadata.super_class);
 
         let mut w = ClassFileWriter {
-            output: output_stream,
+            output: Some(output_stream),
             constant_pool,
             access_flag,
             this_ref,
@@ -36,9 +36,10 @@ impl <W> ClassFileWriter<W> where W: Write + WriteBytesExt {
     }
 
     fn write_header(&mut self) -> io::Result<()> {
-        self.output.write_u32::<byteorder::BigEndian>(0xCAFEBABE)?;
-        self.output.write_u16::<byteorder::BigEndian>(0)?;  // Minor version
-        self.output.write_u16::<byteorder::BigEndian>(65)?; // Major version: JAVA 21
+        let out = self.output.as_mut().unwrap();
+        out.write_u32::<byteorder::BigEndian>(0xCAFEBABE)?;
+        out.write_u16::<byteorder::BigEndian>(0)?;  // Minor version
+        out.write_u16::<byteorder::BigEndian>(65)?; // Major version: JAVA 21
         Ok(())
     }
 
@@ -61,22 +62,24 @@ impl <W> ClassFileWriter<W> where W: Write + WriteBytesExt {
             method_index
         };
     }
-}
 
-impl <W> Drop for ClassFileWriter<W> where W: Write {
-    fn drop(&mut self) {
+    pub fn finalize(mut self) -> W {
         let code_attr = self.constant_pool.utf8("Code".to_string());
-        self.constant_pool.serialize(&mut self.output).unwrap();
-        self.output.write_u16::<byteorder::BigEndian>(self.access_flag).unwrap();
-        self.output.write_u16::<byteorder::BigEndian>(self.this_ref).unwrap();
-        self.output.write_u16::<byteorder::BigEndian>(self.super_ref).unwrap();
-        self.output.write_u16::<byteorder::BigEndian>(0).unwrap(); // No interfaces
-        self.output.write_u16::<byteorder::BigEndian>(0).unwrap(); // No fields
-        self.output.write_u16::<byteorder::BigEndian>(self.methods.len() as u16).unwrap();
+        let out = self.output.as_mut().unwrap();
+        self.constant_pool.serialize(out).unwrap();
+        out.write_u16::<byteorder::BigEndian>(self.access_flag).unwrap();
+        out.write_u16::<byteorder::BigEndian>(self.this_ref).unwrap();
+        out.write_u16::<byteorder::BigEndian>(self.super_ref).unwrap();
+        out.write_u16::<byteorder::BigEndian>(0).unwrap(); // No interfaces
+        out.write_u16::<byteorder::BigEndian>(0).unwrap(); // No fields
+        out.write_u16::<byteorder::BigEndian>(self.methods.len() as u16).unwrap();
         for m in &self.methods {
-            m.serialize(&mut self.output, code_attr).unwrap();
+            m.serialize(out, code_attr).unwrap();
         }
-        self.output.write_u16::<byteorder::BigEndian>(0).unwrap(); // No attributes
+        out.write_u16::<byteorder::BigEndian>(0).unwrap(); // No attributes
+
+        let w = std::mem::take(&mut self.output).expect("Already finalized");
+        return w;
     }
 }
 

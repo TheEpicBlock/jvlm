@@ -1,23 +1,71 @@
-use std::{collections::HashMap, env::args, io::Write, fs::File, io::BufWriter, path::Path};
+use std::{collections::HashMap, env::args, fs::File, io::{BufWriter, Seek, Write}, path::Path};
 
 use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, ClassFileWriter, ClassMetadata, JavaType, MethodMetadata, MethodWriter};
-use inkwell::{basic_block::BasicBlock, context::Context, llvm_sys::{self, core::LLVMGetTypeKind}, types::{AnyType, AnyTypeEnum, AsTypeRef, BasicTypeEnum}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
-use jvlm::{compile, options::JvlmCompileOptions};
+use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
+use options::{FunctionNameMapper, JvlmCompileOptions};
+use zip::{write::{FileOptions, SimpleFileOptions}, ZipWriter};
 
 mod classfile;
+pub mod options;
 
-fn main() {
-    let args = &args().collect::<Vec<_>>();
-    let input = Path::new(&args[1]);
-    let output = Path::new(&args[2]);
-
-    println!("Reading {}", input.display());
-
-    let ctx = Context::create();
-    let input_bitcode = inkwell::module::Module::parse_bitcode_from_path(input, &ctx).unwrap();
+pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileOptions<FNM>) where FNM: FunctionNameMapper {
+    let mut out = ZipWriter::new(out);
     
-    let output = BufWriter::new(File::create(output).unwrap());
-    compile(input_bitcode, output, JvlmCompileOptions::default());
+    let mut methods_per_class = HashMap::<String, Vec<(String, FunctionValue)>>::default();
+    for f in llvm_ir.get_functions() {
+        // Determine what java name this function will get, and which classfile this function be compiled into
+        let location = options.name_mapper.get_java_location(f.get_name().to_str().unwrap());
+        methods_per_class
+            .entry(location.class)
+            .or_insert_with(|| vec![])
+            .push((location.name, f));
+    }
+
+    for (class, methods) in methods_per_class {
+        out.start_file(format!("{class}.class"), SimpleFileOptions::default()).unwrap();
+
+        let class_meta = ClassMetadata {
+            is_public: true,
+            is_final: true,
+            is_interface: false,
+            is_abstract: false,
+            is_synthetic: false,
+            is_annotation: false,
+            is_enum: false,
+            is_module: false,
+            this_class: class,
+            super_class: "java/lang/Object".to_owned(),
+        };
+        let mut class_output = ClassFileWriter::write_classfile(out, class_meta).unwrap();
+        for (meth_name, method) in methods {
+            let method_metadata = MethodMetadata {
+                visibility: classfile::Visibility::PUBLIC,
+                is_static: true,
+                is_final: true,
+                is_synchronized: false,
+                is_bridge: false,
+                is_varargs: false,
+                is_native: false,
+                is_abstract: false,
+                is_strictfp: true,
+                is_synthetic: false,
+                name: meth_name,
+                descriptor: get_descriptor(&method).to_string(),
+            };
+            let method_output = class_output.write_method(method_metadata);
+            translate_method(method, method_output)
+        }
+        out = class_output.finalize();
+    }
+    out.finish().unwrap();
+}
+
+fn translate_method<W: Write>(f: FunctionValue<'_>, method_writer: MethodWriter<'_, W>) {
+    let mut translator = FunctionTranslationContext::new(f.get_params(), method_writer);
+    for block in f.get_basic_blocks() {
+        let terminator = block.get_terminator().unwrap();
+        translate(terminator.as_any_value_enum(), &mut translator);
+    }
 }
 
 fn get_descriptor(function: &FunctionValue<'_>) -> FunctionDescriptor {
