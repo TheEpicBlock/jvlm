@@ -1,19 +1,11 @@
 #![feature(rustc_private)]
 #![allow(mutable_transmutes)]
 
-extern crate rustc_ast;
-extern crate rustc_codegen_ssa;
+// Created by build.rs, contains some stuff needed so we can include codegen_llvm verbatim
+include!(concat!(env!("OUT_DIR"), "/llvm_codegen_header.rs"));
+
 extern crate rustc_codegen_llvm;
-extern crate rustc_data_structures;
 extern crate rustc_driver;
-extern crate rustc_errors;
-extern crate rustc_hir;
-extern crate rustc_metadata;
-extern crate rustc_middle;
-extern crate rustc_session;
-extern crate rustc_span;
-extern crate rustc_symbol_mangling;
-extern crate rustc_target;
 
 use std::any::Any;
 use std::path::PathBuf;
@@ -31,6 +23,9 @@ use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
 use rustc_middle::ty::TyCtxt;
 use rustc_session::Session;
 use rustc_session::config::OutputFilenames;
+
+// #[path = "../rust_git/compiler/rustc_codegen_llvm/src/lib.rs"]
+// mod llvm;
 
 #[derive(Clone)]
 #[repr(transparent)]
@@ -185,7 +180,6 @@ impl WriteBackendMethods for JvlmBackend {
         module: rustc_codegen_ssa::ModuleCodegen<Self::Module>,
         config: &rustc_codegen_ssa::back::write::ModuleConfig,
     ) -> Result<rustc_codegen_ssa::CompiledModule, rustc_errors::FatalError> {
-        dbg!(&module.module_llvm);
         // let cgcx = unsafe { std::mem::transmute(cgcx) };
         // let res = unsafe { <LlvmCodegenBackend as WriteBackendMethods>::codegen(cgcx, dcx, module, config) };
         // let res = unsafe { std::mem::transmute(res) };

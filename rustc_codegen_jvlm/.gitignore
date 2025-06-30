@@ -1,0 +1,2 @@
+# The rust source code will be cloned here by build.rs
+rust_git

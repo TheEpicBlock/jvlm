@@ -8,5 +8,8 @@ crate-type = ["dylib"]
 
 [dependencies]
 
+[build-dependencies]
+toml = "0.8.23"
+
 [package.metadata.rust-analyzer]
 rustc_private = true
