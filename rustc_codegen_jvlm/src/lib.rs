@@ -1,8 +1,21 @@
 #![feature(rustc_private)]
 #![allow(mutable_transmutes)]
 
+////////
+#![feature(assert_matches)]
+#![feature(exact_size_is_empty)]
+#![feature(extern_types)]
+#![feature(file_buffered)]
+#![feature(if_let_guard)]
+#![feature(impl_trait_in_assoc_type)]
+#![feature(iter_intersperse)]
+#![feature(rustdoc_internals)]
+#![feature(slice_as_array)]
+#![feature(try_blocks)]
+////////
+
 // Created by build.rs, contains some stuff needed so we can include codegen_llvm verbatim
-include!(concat!(env!("OUT_DIR"), "/llvm_codegen_header.rs"));
+include!(concat!(env!("OUT_DIR"), "/llvm_include.rs"));
 
 extern crate rustc_codegen_llvm;
 extern crate rustc_driver;
@@ -23,9 +36,6 @@ use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
 use rustc_middle::ty::TyCtxt;
 use rustc_session::Session;
 use rustc_session::config::OutputFilenames;
-
-// #[path = "../rust_git/compiler/rustc_codegen_llvm/src/lib.rs"]
-// mod llvm;
 
 #[derive(Clone)]
 #[repr(transparent)]

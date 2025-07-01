@@ -2,12 +2,15 @@
 #![feature(file_buffered)]
 
 use std::{env, fs::{self, File}, io::{Read, Write}, path::{Path, PathBuf}, process::Command};
-
 use toml::Table;
+use wax::Glob;
 
 const RUST_GIT_SOURCE: &str = "https://github.com/rust-lang/rust.git";
 const TARGET_RUST_COMMIT: &str = "60dabef95a3de3ec974dcb50926e4bfe743f078f";
 const GIT_SPARSE_FILTER: &str = "/compiler/rustc_codegen_llvm/*";
+
+/// We transform rustc_codegen_llvm into a module inside our code, this defines what that module will be called.
+const LLVM_MODULE: &str = "codegen_llvm";
 
 fn main() {
     // Download the source
@@ -18,22 +21,49 @@ fn main() {
     }
 
     // Parse the dependencies
-    let mut cargo_toml = String::new();
-    File::open_buffered((&codegen_llvm_source).join("Cargo.toml")).unwrap().read_to_string(&mut cargo_toml).unwrap();
+    let cargo_toml = fs::read_to_string((&codegen_llvm_source).join("Cargo.toml")).unwrap();
     let cargo_toml: Table = toml::from_str(&cargo_toml).unwrap();
     let dependencies = cargo_toml.get("dependencies").unwrap().as_table().unwrap();
-    // All path dependencies are internal
-    let path_dependencies: Vec<&String> = dependencies.iter()
-        .filter(|(_key, v)| v.as_table().is_some_and(|table| table.contains_key("path")))
+    let dependencies: Vec<&String> = dependencies.iter()
         .map(|(key, _v)| key)
         .collect();
 
     // Write the header
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let mut out = File::create(out.join("llvm_codegen_header.rs")).unwrap();
-    for d in path_dependencies {
-        writeln!(out, "extern crate {d};").unwrap();
+    let mut header_out = File::create(out.join("llvm_include.rs")).unwrap();
+    for d in dependencies {
+        writeln!(header_out, "extern crate {};", d.replace("-", "_")).unwrap();
     }
+    // We need to reexport this because other tooling expects this to be available at the crate root
+    writeln!(header_out, "pub(crate) use {LLVM_MODULE}::fluent_generated;").unwrap();
+    writeln!(header_out, "#[path=\"{}\"]", out.join("src/lib.rs").display()).unwrap();
+    writeln!(header_out, "mod {LLVM_MODULE};").unwrap();
+    
+    // Write the rest of codegen_llvm
+    let messages = fs::read_to_string(codegen_llvm_source.join("messages.ftl")).unwrap();
+    let messages = messages.replace("codegen_llvm_", "codegen_jvlm_codegen_llvm_");
+    File::create(out.join("messages.ftl")).unwrap().write_all(messages.as_bytes()).unwrap();
+    let src = codegen_llvm_source.join("src");
+    for entry in Glob::new("**/*.rs").unwrap().walk(&src) {
+        let entry = entry.unwrap();
+        let target = out.join("src").join(entry.path().strip_prefix(&src).unwrap());
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let contents = fs::read_to_string(entry.path()).unwrap();
+        let contents = contents.replace("crate::", &format!("crate::{LLVM_MODULE}::"));
+        let contents = contents
+            .lines()
+            .filter(|l| !l.starts_with("#!["))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let contents = contents.replace("#[diag(codegen_llvm", "#[diag(codegen_jvlm_codegen_llvm");
+        let contents = contents.replace("#[note(codegen_llvm", "#[note(codegen_jvlm_codegen_llvm");
+        let contents = contents.replace("#[help(codegen_llvm", "#[help(codegen_jvlm");
+        let contents = contents.replace("fluent::codegen_llvm", "fluent::codegen_jvlm_codegen_llvm");
+        let contents = contents.replace("#[link(name = \"llvm-wrapper\", kind = \"static\")]", "");
+        // let contents = contents.replacen("\nuse", "\nuse crate::codegen_llvm::fluent_generated;\nuse", 1);
+        File::create(target).unwrap().write_all(contents.as_bytes()).unwrap();
+    }
+    println!("cargo::rerun-if-changed=build.rs");
 }
 
 fn download_rust_source() -> PathBuf {
