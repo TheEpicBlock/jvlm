@@ -19,9 +19,12 @@ include!(concat!(env!("OUT_DIR"), "/llvm_include.rs"));
 extern crate rustc_driver;
 
 use std::any::Any;
+use std::fs::File;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::path::Path;
 
 use codegen_llvm::LlvmCodegenBackend;
 use rustc_codegen_ssa::back::link::link_binary;
@@ -90,7 +93,6 @@ impl CodegenBackend for JvlmBackend {
     }
 
     fn link(&self, sess: &Session, codegen_results: CodegenResults, outputs: &OutputFilenames) {
-        dbg!(&codegen_results.modules);
         self.llvm.link(sess, codegen_results, outputs);
     }
 
@@ -188,22 +190,10 @@ impl WriteBackendMethods for JvlmBackend {
         module: rustc_codegen_ssa::ModuleCodegen<Self::Module>,
         config: &rustc_codegen_ssa::back::write::ModuleConfig,
     ) -> Result<rustc_codegen_ssa::CompiledModule, rustc_errors::FatalError> {
-        // let cgcx = unsafe { std::mem::transmute(cgcx) };
-        // let res = unsafe { <LlvmCodegenBackend as WriteBackendMethods>::codegen(cgcx, dcx, module, config) };
-        // let res = unsafe { std::mem::transmute(res) };
-        // dbg!(&res);
-        // res
-        println!("EE");
-        Ok(CompiledModule {
-            name: "Hello".to_string(),
-            kind: ModuleKind::Regular,
-            object: None,
-            dwarf_object: None,
-            bytecode: None,
-            assembly: None,
-            llvm_ir: None,
-            links_from_incr_cache: vec![],
-        })
+        let cgcx = unsafe { std::mem::transmute(cgcx) };
+        let res = unsafe { <LlvmCodegenBackend as WriteBackendMethods>::codegen(cgcx, dcx, module, config) };
+        let res = unsafe { std::mem::transmute(res) };
+        res
     }
 
     fn prepare_thin(
@@ -256,6 +246,23 @@ impl ExtraBackendMethods for JvlmBackend {
     ) -> rustc_codegen_ssa::back::write::TargetMachineFactoryFn<Self> {
         self.llvm.target_machine_factory(sess, opt_level, target_features)
     }
+}
+
+pub(crate) fn write_output_file<'ll>(
+    dcx: rustc_errors::DiagCtxtHandle<'_>,
+    target: &'ll codegen_llvm::llvm::TargetMachine,
+    no_builtins: bool,
+    m: &'ll codegen_llvm::llvm::Module,
+    output: &Path,
+    dwo_output: Option<&Path>,
+    file_type: codegen_llvm::llvm::FileType,
+    self_profiler_ref: &rustc_data_structures::profiling::SelfProfilerRef,
+    verify_llvm_ir: bool,
+) -> Result<(), rustc_span::fatal_error::FatalError> {
+    let r: io::Result<_> = try {
+        File::create(output)?.write_all(b"hihi")?
+    };
+    r.map_err(|_| dcx.emit_almost_fatal(codegen_llvm::errors::LlvmError::WriteOutput { path: output }))
 }
 
 /// This is the entrypoint for a hot plugged rustc_codegen_llvm

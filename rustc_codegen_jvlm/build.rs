@@ -75,6 +75,8 @@ fn copy_codegen_llvm(codegen_llvm_source: PathBuf) {
         let target = out.join("src").join(entry.path().strip_prefix(&src).unwrap());
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         let contents = fs::read_to_string(entry.path()).unwrap();
+        
+        // Change some stuff so code can be imported as a module
         let contents = contents.replace("crate::", &format!("crate::{LLVM_MODULE}::"));
         let contents = contents
             .lines()
@@ -85,6 +87,12 @@ fn copy_codegen_llvm(codegen_llvm_source: PathBuf) {
         let contents = contents.replace("#[note(codegen_llvm", "#[note(codegen_jvlm_codegen_llvm");
         let contents = contents.replace("#[help(codegen_llvm", "#[help(codegen_jvlm");
         let contents = contents.replace("fluent::codegen_llvm", "fluent::codegen_jvlm_codegen_llvm");
+
+        // Actual modification to the meaning of the code
+        let contents = contents.replace("mod errors;", "pub(crate) mod errors;");
+        let contents = contents.replace("mod llvm;", "pub(crate) mod llvm;");
+        let contents = contents.replace("fn write_output_file", "pub(crate) use crate::write_output_file;\nfn write_output_file_unused");
+
         File::create(target).unwrap().write_all(contents.as_bytes()).unwrap();
     }
 }
