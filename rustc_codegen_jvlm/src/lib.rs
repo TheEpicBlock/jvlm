@@ -1,6 +1,5 @@
 #![feature(rustc_private)]
 #![allow(mutable_transmutes)]
-
 ////////
 #![feature(assert_matches)]
 #![feature(exact_size_is_empty)]
@@ -17,7 +16,6 @@
 // Created by build.rs, contains some stuff needed so we can include codegen_llvm verbatim
 include!(concat!(env!("OUT_DIR"), "/llvm_include.rs"));
 
-extern crate rustc_codegen_llvm;
 extern crate rustc_driver;
 
 use std::any::Any;
@@ -25,7 +23,7 @@ use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use rustc_codegen_llvm::LlvmCodegenBackend;
+use codegen_llvm::LlvmCodegenBackend;
 use rustc_codegen_ssa::back::link::link_binary;
 use rustc_codegen_ssa::base::codegen_crate;
 use rustc_codegen_ssa::traits::{CodegenBackend, ExtraBackendMethods, WriteBackendMethods};
