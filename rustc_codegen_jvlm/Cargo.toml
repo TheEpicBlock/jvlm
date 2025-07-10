@@ -7,7 +7,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-jvlm = { path = "../" }
+jvlm = { path = "../", features = [ "dynamic-link" ]}
 
 [build-dependencies]
 cc = "1.2.27"
