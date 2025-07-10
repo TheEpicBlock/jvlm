@@ -13,5 +13,6 @@ edition = "2024"
 bytebuffer = "2.3.0"
 byteorder = "1.5.0"
 indexmap = "2.9.0"
-inkwell = { version = "0.6.0", features = ["llvm16-0"] }
+llvm-sys = { version = "*", features = ["no-llvm-linking"]}
+inkwell = { git = "https://github.com/stevefan1999-personal/inkwell.git", features = ["llvm20-1-force-dynamic"], default-features = false}
 zip = "4.2.0"

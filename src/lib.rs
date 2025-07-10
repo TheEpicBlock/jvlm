@@ -8,6 +8,8 @@ use zip::{write::SimpleFileOptions, ZipWriter};
 mod classfile;
 pub mod options;
 
+pub type LlvmModule<'a> = Module<'a>;
+
 pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileOptions<FNM>) where FNM: FunctionNameMapper {
     let mut out = ZipWriter::new(out);
     

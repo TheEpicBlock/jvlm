@@ -32,6 +32,7 @@ use rustc_codegen_ssa::base::codegen_crate;
 use rustc_codegen_ssa::traits::{CodegenBackend, ExtraBackendMethods, WriteBackendMethods};
 use rustc_codegen_ssa::{CodegenResults, CompiledModule, CrateInfo, ModuleKind, TargetConfig};
 use rustc_data_structures::fx::FxIndexMap;
+use jvlm::options::JvlmCompileOptions;
 use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
 use rustc_middle::ty::TyCtxt;
@@ -46,7 +47,7 @@ struct JvlmBackend {
 
 impl CodegenBackend for JvlmBackend {
     fn locale_resource(&self) -> &'static str {
-        ""
+        LlvmCodegenBackend::locale_resource(&self.llvm)
     }
 
     fn init(&self, sess: &Session) {
@@ -260,7 +261,9 @@ pub(crate) fn write_output_file<'ll>(
     verify_llvm_ir: bool,
 ) -> Result<(), rustc_span::fatal_error::FatalError> {
     let r: io::Result<_> = try {
-        File::create(output)?.write_all(b"hihi")?
+        let mut output = File::create(output)?;
+        let llvm_mod = unsafe {jvlm::LlvmModule::new(std::mem::transmute(m))};
+        jvlm::compile(llvm_mod, output, JvlmCompileOptions::default());
     };
     r.map_err(|_| dcx.emit_almost_fatal(codegen_llvm::errors::LlvmError::WriteOutput { path: output }))
 }

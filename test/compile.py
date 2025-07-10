@@ -33,7 +33,8 @@ def compileRust(input: Path):
 	print(f"Rust: Compiling {input}")
 	r = subprocess.call([
 		shutil.which(CARGO),
-		"build"
+		"build",
+		"--release"
 	], env={
 		"CARGO_ENCODED_RUSTFLAGS": f"-Zcodegen-backend={CODEGEN_BACKEND}"
 	}, cwd=input)
