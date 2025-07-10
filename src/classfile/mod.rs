@@ -121,6 +121,9 @@ impl <W> MethodWriter<'_, W> where W: Write {
     fn code(&mut self) -> &mut ByteBuffer {
         return &mut self.class_writer.methods[self.method_index].code;
     }
+    fn code_immutable(&self) -> &ByteBuffer {
+        return &self.class_writer.methods[self.method_index].code;
+    }
 
     fn emit_opcode_referencing_local_var(&mut self, opcode: u8, index: u16) {
         if let Some(index) = u8::try_from(index).ok() {
@@ -212,6 +215,46 @@ impl <W> MethodWriter<'_, W> where W: Write {
             JavaType::Reference => todo!(),
         }
     }
+
+    #[must_use]
+    pub fn emit_goto(&mut self) -> InstructionTarget {
+        let i = self.current_location();
+        // There is a wide variant for goto, but our code is architectured in a way that
+        // assumes the target has a constant bit width. Luckily, there are other factors limiting
+        // the size of a java method to 2^16 bytes, so the wide variant goes unused.
+        self.code().write_u8(0xA7); // GOTO
+        let j = self.code_immutable().get_wpos();
+        self.code().write_u16(0xFEFE); // Temporary branch target
+        return InstructionTarget {
+            instruction_location: i,
+            jump_location: j
+        };
+    }
+
+    pub fn set_target(&mut self, target_index: InstructionTarget, target: CodeLocation) {
+        let offset = target.0 - target_index.instruction_location.0;
+        let wpos = self.code().get_wpos();
+        self.code().set_wpos(target_index.jump_location);
+        self.code().write_u16(offset as u16);
+        self.code().set_wpos(wpos);
+    }
+
+    pub fn current_location(&self) -> CodeLocation {
+        return CodeLocation(self.code_immutable().get_wpos());
+    }
+}
+
+/// Represents an instruction inside of the code
+pub struct CodeLocation(usize);
+
+/// This represents the target of a branching instruction. The target can be any [`CodeLocation`].
+/// The target can be queried and modified. This value is bound to the [`MethodWriter`] which created it,
+/// it represents an index into a list of targets which is maintained by the [`MethodWriter`].
+pub struct InstructionTarget{
+    // The instruction from which the offset will be calculated
+    instruction_location: CodeLocation,
+    /// The bytes which contain an offset of where to jump to
+    jump_location: usize,
 }
 
 pub struct MethodMetadata {

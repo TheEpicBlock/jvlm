@@ -181,10 +181,22 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
                 let icmp = v.get_operand(0).unwrap().unwrap_left().as_instruction_value().unwrap();
                 icmp.get_operands().for_each(|o| translate_operand(o, e));
                 let predicate = icmp.get_icmp_predicate().unwrap();
-                println!("IF_ICMP {predicate:?}");
+                
+                let icmp_target = e.java_method.emit_goto();
+                // println!("IF_ICMP {predicate:?}");
+                // if the icmp is false, it'll execute the next instruction and compute operand one
                 translate_operand(v.get_operand(1), e);
-                println!("GOTO");
+                // after we've computed operand one, we skip over operand two
+                let goto_target = e.java_method.emit_goto();
+                // This is where we compute operand two. If out icmp is true, we should land here
+                let op2 = e.java_method.current_location(); // Location where operand two is computer
                 translate_operand(v.get_operand(2), e);
+                // This is after we compute operand two, this is where out goto should land
+                let after_select = e.java_method.current_location();
+
+                // Set the targets
+                e.java_method.set_target(icmp_target, op2);
+                e.java_method.set_target(goto_target, after_select);
             } else {
                 todo!();
             }
