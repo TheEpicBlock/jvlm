@@ -1,6 +1,6 @@
 use std::{collections::HashMap, io::{Seek, Write}};
 
-use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, ClassFileWriter, ClassMetadata, JavaType, MethodMetadata, MethodWriter};
+use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, MethodMetadata, MethodWriter};
 use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
 use options::{FunctionNameMapper, JvlmCompileOptions};
 use zip::{write::SimpleFileOptions, ZipWriter};
@@ -65,6 +65,7 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
 fn translate_method<W: Write>(f: FunctionValue<'_>, method_writer: MethodWriter<'_, W>) {
     let mut translator = FunctionTranslationContext::new(f.get_params(), method_writer);
     for block in f.get_basic_blocks() {
+        translator.record_start_of_basic_block(&block);
         let terminator = block.get_terminator().unwrap();
         translate(terminator.as_any_value_enum(), &mut translator);
     }
@@ -176,6 +177,16 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
             v.get_operands().for_each(|o| translate_operand(o, e));
             e.java_method.emit_return(Some(JavaType::Int)); // TODO
         },
+        InstructionOpcode::Br => {
+            if v.get_num_operands() == 1 {
+                // Unconditional branch
+                let dest = v.get_operand(0).unwrap().right().unwrap();
+                let goto_target = e.java_method.emit_goto();
+                e.set_target_to_basic_block(goto_target, &dest);
+            } else {
+                todo!()
+            }
+        },
         InstructionOpcode::Select => {
             if v.get_operand(0).is_some_and(|o| o.left().is_some_and(|o| o.as_instruction_value().is_some_and(|o| o.get_opcode() == InstructionOpcode::ICmp))) {
                 let icmp = v.get_operand(0).unwrap().unwrap_left().as_instruction_value().unwrap();
@@ -236,7 +247,58 @@ struct FunctionTranslationContext<'ctx, 'class_writer, W: Write> {
     params: HashMap<AnyValueEnum<'ctx>, u16>,
     already_computed: HashMap<AnyValueEnum<'ctx>, InstructionStatus>,
     next_slot: u16,
-    java_method: MethodWriter<'class_writer, W>
+    java_method: MethodWriter<'class_writer, W>,
+    basic_block_tracker: BasicBlockTracker<'ctx>,
+}
+
+#[derive(Default)]
+struct BasicBlockTracker<'ctx> {
+    /// Contains basic blocks which already have a known starting location
+    already_written: HashMap<BasicBlock<'ctx>, CodeLocation>,
+    /// A map of [`BasicBlock`]'s, along with [`InstructionTarget`]'s which should point to the [`BasicBlock`]'s.
+    to_write: HashMap<BasicBlock<'ctx>, Vec<InstructionTarget>>,
+}
+
+impl <'ctx, W: Write>  FunctionTranslationContext<'ctx, '_, W> {
+    /// Record the currect location in the [`MethodWriter`] to be the start of the given [`BasicBlock`] 
+    fn record_start_of_basic_block(&mut self, block: &BasicBlock<'ctx>) {
+        // We now have a resolved location for this block:
+        let block_location = self.java_method.current_location();
+
+        // This means that we can write the address for any branch instructions which still need them
+        if let Some(to_write) = self.basic_block_tracker.to_write.remove(block) {
+            for target in to_write {
+                self.java_method.set_target(target, block_location);
+            }
+        }
+
+        // Record the start of the block for future reference
+        self.basic_block_tracker.already_written.insert(*block, block_location);
+
+        // Additionally!!
+        // TODO formalize the logic around local variable tables and branching
+        // we explicitly record the stackframe at this point, since it's a branch target
+        self.java_method.record_stackframe(block_location, self.java_method.get_current_stackframe());
+    }
+
+    /// Sets the value of a [`InstructionTarget`] to point to a [`BasicBlock`] 
+    fn set_target_to_basic_block(&mut self, target_ref: InstructionTarget, target: &BasicBlock<'ctx>) {
+        // We check if the basic block which we want to target has already been started. If it has
+        // been started, we know its location in the bytecode and we can immediately write that
+        // as the desired target.
+        // If the basic block has not been started yet, we do not know which address to write here.
+        // Instead, we store the InstructionTarget in a temporary list. This list will be queried later
+        // inside of `start_basic_block`, where the InstructionTarget is retroactively written to with the
+        // right location
+        if let Some(location) = self.basic_block_tracker.already_written.get(target) {
+            self.java_method.set_target(target_ref, *location);
+        } else {
+            self.basic_block_tracker.to_write
+                .entry(*target)
+                .or_insert_with(|| vec![])
+                .push(target_ref);
+        }
+    }
 }
 
 struct InstructionStatus {
@@ -251,6 +313,7 @@ impl <W: Write> FunctionTranslationContext<'_, '_, W> {
             already_computed: HashMap::new(),
             java_method: method,
             next_slot,
+            basic_block_tracker: Default::default()
         };
     }
     fn get_next_slot(&mut self) -> u16 {
