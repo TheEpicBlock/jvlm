@@ -1,3 +1,4 @@
+#![allow(dead_code)] // For some reason we must add this
 use std::{collections::HashMap, env::args, io::Write, fs::File, io::BufWriter, path::Path};
 
 use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, JavaType, MethodWriter};
