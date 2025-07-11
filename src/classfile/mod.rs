@@ -1,4 +1,4 @@
-use std::{collections::{BTreeMap, BTreeSet}, io::{self, Write}};
+use std::{collections::BTreeMap, io::{self, Write}};
 use bytebuffer::ByteBuffer;
 use byteorder::WriteBytesExt;
 use constant_pool::{ConstantPool, ConstantPoolReference};
