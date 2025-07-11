@@ -230,6 +230,21 @@ impl <W> MethodWriter<'_, W> where W: Write {
             jump_location: j
         };
     }
+    
+    #[must_use]
+    pub fn emit_if_icmp(&mut self, ty: ComparisonType) -> InstructionTarget {
+        let i = self.current_location();
+        // There is a wide variant for goto, but our code is architectured in a way that
+        // assumes the target has a constant bit width. Luckily, there are other factors limiting
+        // the size of a java method to 2^16 bytes, so the wide variant goes unused.
+        self.code().write_u8(0x9F + (ty as u8)); // GOTO
+        let j = self.code_immutable().get_wpos();
+        self.code().write_u16(0xFEFE); // Temporary branch target
+        return InstructionTarget {
+            instruction_location: i,
+            jump_location: j
+        };
+    }
 
     pub fn set_target(&mut self, target_index: InstructionTarget, target: CodeLocation) {
         let offset = target.0 - target_index.instruction_location.0;
@@ -255,6 +270,15 @@ pub struct InstructionTarget{
     instruction_location: CodeLocation,
     /// The bytes which contain an offset of where to jump to
     jump_location: usize,
+}
+
+pub enum ComparisonType {
+    Equal = 0,
+    NotEqual = 1,
+    LessThan = 2,
+    LessThanEqual = 5,
+    GreaterThan = 4,
+    GreaterThanEqual = 3,
 }
 
 pub struct MethodMetadata {

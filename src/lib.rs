@@ -182,7 +182,19 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
                 icmp.get_operands().for_each(|o| translate_operand(o, e));
                 let predicate = icmp.get_icmp_predicate().unwrap();
                 
-                let icmp_target = e.java_method.emit_goto();
+                // TODO figure out how to deal with signed-ness
+                let icmp_target = e.java_method.emit_if_icmp(match predicate {
+                    inkwell::IntPredicate::EQ => classfile::ComparisonType::Equal,
+                    inkwell::IntPredicate::NE => classfile::ComparisonType::NotEqual,
+                    inkwell::IntPredicate::UGT => classfile::ComparisonType::GreaterThan,
+                    inkwell::IntPredicate::UGE => classfile::ComparisonType::GreaterThanEqual,
+                    inkwell::IntPredicate::ULT => classfile::ComparisonType::LessThan,
+                    inkwell::IntPredicate::ULE => classfile::ComparisonType::LessThanEqual,
+                    inkwell::IntPredicate::SGT => classfile::ComparisonType::GreaterThan,
+                    inkwell::IntPredicate::SGE => classfile::ComparisonType::GreaterThanEqual,
+                    inkwell::IntPredicate::SLT => classfile::ComparisonType::LessThan,
+                    inkwell::IntPredicate::SLE => classfile::ComparisonType::LessThanEqual,
+                });
                 // println!("IF_ICMP {predicate:?}");
                 // if the icmp is false, it'll execute the next instruction and compute operand one
                 translate_operand(v.get_operand(1), e);
