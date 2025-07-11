@@ -1,8 +1,8 @@
-use std::{io::Write, io};
+use std::{collections::{BTreeMap, BTreeSet}, io::{self, Write}};
 use bytebuffer::ByteBuffer;
 use byteorder::WriteBytesExt;
 use constant_pool::{ConstantPool, ConstantPoolReference};
-use descriptor::DescriptorEntry;
+use descriptor::{DescriptorEntry, FunctionDescriptor};
 
 mod constant_pool;
 pub(crate) mod descriptor;
@@ -48,23 +48,32 @@ impl <W> ClassFileWriter<W> where W: Write + WriteBytesExt {
 
         let access_flag = metadata.get_access_flag();
         let name_ref = self.constant_pool.utf8(metadata.name);
-        let desc_ref = self.constant_pool.utf8(metadata.descriptor);
+        let desc_ref = self.constant_pool.utf8(metadata.descriptor.to_string());
+
+        let initial_frame = calculate_initial_stackframe(&metadata.descriptor);
 
         self.methods.push(MethodData {
             access_flag,
             name_ref,
             desc_ref,
-            code: ByteBuffer::new()
+            descriptor: metadata.descriptor,
+            code: ByteBuffer::new(),
+            max_stack_size: initial_frame.stack.len(),
+            stackmaptable: Default::default(),
         });
-        
+
         return MethodWriter {
             class_writer: self,
-            method_index
+            method_index,
+            current_frame: initial_frame,
         };
     }
 
     pub fn finalize(mut self) -> W {
-        let code_attr = self.constant_pool.utf8("Code".to_string());
+        let code_attr = self.constant_pool.utf8("Code".into());
+        let stack_map_table_attr = self.methods.iter()
+            .any(|m| m.needs_stack_map_table())
+            .then(|| self.constant_pool.utf8("StackMapTable".into()));
         let out = self.output.as_mut().unwrap();
         self.constant_pool.serialize(out).unwrap();
         out.write_u16::<byteorder::BigEndian>(self.access_flag).unwrap();
@@ -74,7 +83,7 @@ impl <W> ClassFileWriter<W> where W: Write + WriteBytesExt {
         out.write_u16::<byteorder::BigEndian>(0).unwrap(); // No fields
         out.write_u16::<byteorder::BigEndian>(self.methods.len() as u16).unwrap();
         for m in &self.methods {
-            m.serialize(out, code_attr).unwrap();
+            m.serialize(out, code_attr, stack_map_table_attr).unwrap();
         }
         out.write_u16::<byteorder::BigEndian>(0).unwrap(); // No attributes
 
@@ -115,6 +124,7 @@ impl ClassMetadata {
 pub struct MethodWriter<'class_writer, W: Write> {
     class_writer: &'class_writer mut ClassFileWriter<W>,
     method_index: usize,
+    current_frame: StackMapFrame,
 }
 
 impl <W> MethodWriter<'_, W> where W: Write {
@@ -123,6 +133,37 @@ impl <W> MethodWriter<'_, W> where W: Write {
     }
     fn code_immutable(&self) -> &ByteBuffer {
         return &self.class_writer.methods[self.method_index].code;
+    }
+
+    /// Record that we emitted an instruction that pushes something to the stack.
+    /// 
+    /// We keep track of what the stack and local variable table look like. To do this,
+    /// we keep a virtual stack.
+    fn record_push(&mut self, t: VerificationType) {
+        self.current_frame.stack.push(t);
+        let max_stack_size = &mut self.class_writer.methods[self.method_index].max_stack_size;
+        if self.current_frame.stack.len() > *max_stack_size {
+            *max_stack_size = self.current_frame.stack.len();
+        }
+    }
+    fn record_push_ty(&mut self, t: JavaType) {
+        match t {
+            JavaType::Int => self.record_push(VerificationType::Integer),
+            JavaType::Long => self.record_push(VerificationType::Long),
+            // TODO hrmm, how to handle these
+            JavaType::Float => self.record_push(VerificationType::Float),
+            JavaType::Double => self.record_push(VerificationType::Double),
+            // TODO oh no, we should probably keep better track of this
+            JavaType::Reference => self.record_push(VerificationType::Object("java/lang/Object".to_owned())),
+        }
+    }
+
+    /// Record that we emitted an instruction that pops something from the stack.
+    /// 
+    /// We keep track of what the stack and local variable table look like. To do this,
+    /// we keep a virtual stack.
+    fn record_pop(&mut self) -> VerificationType {
+        self.current_frame.stack.pop().unwrap()
     }
 
     fn emit_opcode_referencing_local_var(&mut self, opcode: u8, index: u16) {
@@ -155,6 +196,7 @@ impl <W> MethodWriter<'_, W> where W: Write {
             JavaType::Double => self.emit_load_store_inner(0x26, 0x18, index),
             JavaType::Reference => self.emit_load_store_inner(0x2a, 0x19, index),
         }
+        self.record_push_ty(ty);
     }
 
     pub fn emit_store(&mut self, ty: JavaType, index: u16) {
@@ -166,6 +208,7 @@ impl <W> MethodWriter<'_, W> where W: Write {
             // JavaType::Reference => self.emit_load_inner(0x2a, 0x19, index),
             _ => todo!()
         }
+        self.record_pop();
     }
 
     pub fn emit_constant_int(&mut self, integer: i32) {
@@ -177,9 +220,13 @@ impl <W> MethodWriter<'_, W> where W: Write {
             self.code().write_u8(0x13); //LDC_w
             self.code().write_u16(r);
         }
+        self.record_push(VerificationType::Integer);
     }
 
     pub fn emit_return(&mut self, ty: Option<JavaType>) {
+        if ty.is_some() {
+            self.record_pop();
+        }
         match ty {
             Some(ty) => match ty {
                 JavaType::Int => self.code().write_u8(0xac),
@@ -194,6 +241,10 @@ impl <W> MethodWriter<'_, W> where W: Write {
 
     pub fn emit_dup(&mut self) {
         self.code().write_u8(0x59);
+        
+        let p = self.record_pop();
+        self.record_push(p.clone());
+        self.record_push(p);
     }
 
     pub fn emit_add(&mut self, ty: JavaType) {
@@ -204,6 +255,9 @@ impl <W> MethodWriter<'_, W> where W: Write {
             JavaType::Double => todo!(),
             JavaType::Reference => todo!(),
         }
+        self.record_pop();
+        self.record_pop();
+        self.record_push_ty(ty);
     }
 
     pub fn emit_mul(&mut self, ty: JavaType) {
@@ -214,6 +268,9 @@ impl <W> MethodWriter<'_, W> where W: Write {
             JavaType::Double => todo!(),
             JavaType::Reference => todo!(),
         }
+        self.record_pop();
+        self.record_pop();
+        self.record_push_ty(ty);
     }
 
     #[must_use]
@@ -230,9 +287,12 @@ impl <W> MethodWriter<'_, W> where W: Write {
             jump_location: j
         };
     }
-    
+
     #[must_use]
     pub fn emit_if_icmp(&mut self, ty: ComparisonType) -> InstructionTarget {
+        self.record_pop();
+        self.record_pop();
+
         let i = self.current_location();
         // There is a wide variant for goto, but our code is architectured in a way that
         // assumes the target has a constant bit width. Luckily, there are other factors limiting
@@ -257,21 +317,92 @@ impl <W> MethodWriter<'_, W> where W: Write {
     pub fn current_location(&self) -> CodeLocation {
         return CodeLocation(self.code_immutable().get_wpos());
     }
+
+    pub fn get_current_stackframe(&self) -> StackMapFrame {
+        return self.current_frame.clone();
+    }
+
+    pub fn set_current_stackframe(&mut self, frame: StackMapFrame) {
+        self.current_frame = frame;
+    }
+
+    pub fn record_stackframe(&mut self, loc: CodeLocation, frame: StackMapFrame) {
+        self.class_writer.methods[self.method_index].stackmaptable.insert(loc, frame);
+    }
+}
+
+#[derive(Clone)]
+pub struct StackMapFrame {
+    stack: Vec<VerificationType>,
+    locals: Vec<VerificationType>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum VerificationType {
+    Top,
+    Integer,
+    Float,
+    Long,
+    Double,
+    Null,
+    UninitializedThis,
+    Object(String),
+    UninitializedVariable(CodeLocation),
+}
+
+impl VerificationType {
+    fn serialize(&self, b: &mut ByteBuffer) {
+        match self {
+            VerificationType::Top => b.write_u8(0),
+            VerificationType::Integer => b.write_u8(1),
+            VerificationType::Float => b.write_u8(2),
+            VerificationType::Long => b.write_u8(4),
+            VerificationType::Double => b.write_u8(3),
+            VerificationType::Null => b.write_u8(5),
+            VerificationType::UninitializedThis => b.write_u8(6),
+            VerificationType::Object(_) => todo!(),
+            VerificationType::UninitializedVariable(code_location) => {
+                b.write_u8(8);
+                b.write_u16(code_location.0 as u16);
+            },
+        }
+    }
+}
+
+fn calculate_initial_stackframe(descriptor: &FunctionDescriptor) -> StackMapFrame {
+    StackMapFrame {
+        stack: Vec::new(), // Stack starts empty
+        locals: descriptor.0.iter().flat_map(|d| match d {
+            DescriptorEntry::Byte => vec![VerificationType::Integer],
+            DescriptorEntry::Char => vec![VerificationType::Integer],
+            // TODO Are we handling doubles/longs correctly here??
+            DescriptorEntry::Double => vec![VerificationType::Double, VerificationType::Top],
+            DescriptorEntry::Float => vec![VerificationType::Float],
+            DescriptorEntry::Int => vec![VerificationType::Integer],
+            DescriptorEntry::Long => vec![VerificationType::Double, VerificationType::Top],
+            DescriptorEntry::Class(x) => vec![VerificationType::Object(x.to_string())],
+            DescriptorEntry::Short => vec![VerificationType::Integer],
+            DescriptorEntry::Boolean => vec![VerificationType::Integer],
+            DescriptorEntry::Array(x) => vec![VerificationType::Object(format!("[{x}"))],
+        }).collect(),
+    }
 }
 
 /// Represents an instruction inside of the code
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CodeLocation(usize);
 
 /// This represents the target of a branching instruction. The target can be any [`CodeLocation`].
 /// The target can be queried and modified. This value is bound to the [`MethodWriter`] which created it,
 /// it represents an index into a list of targets which is maintained by the [`MethodWriter`].
-pub struct InstructionTarget{
+pub struct InstructionTarget {
     // The instruction from which the offset will be calculated
     instruction_location: CodeLocation,
     /// The bytes which contain an offset of where to jump to
     jump_location: usize,
 }
 
+#[repr(u8)]
 pub enum ComparisonType {
     Equal = 0,
     NotEqual = 1,
@@ -293,7 +424,7 @@ pub struct MethodMetadata {
     pub is_strictfp: bool,
     pub is_synthetic: bool,
     pub name: String,
-    pub descriptor: String,
+    pub descriptor: FunctionDescriptor,
 }
 
 pub struct MethodData {
@@ -301,23 +432,77 @@ pub struct MethodData {
     name_ref: ConstantPoolReference,
     desc_ref: ConstantPoolReference,
     code: ByteBuffer,
+    max_stack_size: usize,
+    descriptor: FunctionDescriptor,
+    stackmaptable: BTreeMap<CodeLocation, StackMapFrame>,
 }
 
 impl MethodData {
-    fn serialize(&self, writer: &mut impl Write, code_attribute: ConstantPoolReference) -> io::Result<()> {
+    fn serialize(&self, writer: &mut impl Write, code_attribute: ConstantPoolReference, stack_map_table_attr: Option<ConstantPoolReference>) -> io::Result<()> {
+        // First of all, lets serialize the stack map table (if needed). We need to know its size
+        let stack_map_table = self.needs_stack_map_table().then(|| {
+            let mut stackmaptable_buf = ByteBuffer::new();
+
+            // Every stack table starts with an implicit stack frame at index zero, calculated with the descriptor
+            let mut previous_location = CodeLocation(0);
+            let mut previous_frame: &StackMapFrame = &calculate_initial_stackframe(&self.descriptor);
+            
+            stackmaptable_buf.write_u16(self.stackmaptable.len() as u16);
+            for (location, frame) in &self.stackmaptable {
+                let offset = location.0 - previous_location.0;
+                let stack_empty = frame.stack.is_empty();
+                let local_eq = previous_frame.locals == frame.locals;
+
+                if stack_empty && local_eq {
+                    if offset < 64 {
+                        // Same frame
+                        stackmaptable_buf.write_u8(offset as u8);
+                    } else {
+                        // Same frame extended
+                        stackmaptable_buf.write_u8(251);
+                        stackmaptable_buf.write_u16(offset as u16);
+                    }
+                } else {
+                    // Full frame
+                    stackmaptable_buf.write_u8(255);
+                    stackmaptable_buf.write_u16(offset as u16);
+                    stackmaptable_buf.write_u16(frame.locals.len() as u16);
+                    frame.locals.iter().for_each(|entry| entry.serialize(&mut stackmaptable_buf));
+                    stackmaptable_buf.write_u16(frame.stack.len() as u16);
+                    frame.stack.iter().for_each(|entry| entry.serialize(&mut stackmaptable_buf));
+                }
+                
+                previous_location = CodeLocation(location.0 + 1);
+                previous_frame = frame;
+            }
+
+            stackmaptable_buf
+        });
+
         writer.write_u16::<byteorder::BigEndian>(self.access_flag)?;
         writer.write_u16::<byteorder::BigEndian>(self.name_ref)?;
         writer.write_u16::<byteorder::BigEndian>(self.desc_ref)?;
         writer.write_u16::<byteorder::BigEndian>(1)?; // One attribute
-        writer.write_u16::<byteorder::BigEndian>(code_attribute)?;
-        writer.write_u32::<byteorder::BigEndian>(self.code.as_bytes().len() as u32 + 12)?;
-        writer.write_u16::<byteorder::BigEndian>(50)?; // TODO: max-stack
-        writer.write_u16::<byteorder::BigEndian>(50)?; // TODO: max-locals
+        writer.write_u16::<byteorder::BigEndian>(code_attribute)?; // That attribute is named "Code"
+        writer.write_u32::<byteorder::BigEndian>((self.code.as_bytes().len() + 12 + stack_map_table.as_ref().map(|b| b.as_bytes().len() + 6).unwrap_or(0)) as u32)?;
+        writer.write_u16::<byteorder::BigEndian>(self.max_stack_size as u16)?;
+        writer.write_u16::<byteorder::BigEndian>(1)?; // TODO: max-locals
         writer.write_u32::<byteorder::BigEndian>(self.code.as_bytes().len() as u32)?;
         writer.write_all(self.code.as_bytes())?;
         writer.write_u16::<byteorder::BigEndian>(0)?; // No exception table
-        writer.write_u16::<byteorder::BigEndian>(0)?; // No additional attributes
+        if let Some(stack_map_table) = stack_map_table {
+            writer.write_u16::<byteorder::BigEndian>(1)?; // One additional attribute
+            writer.write_u16::<byteorder::BigEndian>(stack_map_table_attr.unwrap())?;
+            writer.write_u32::<byteorder::BigEndian>(stack_map_table.as_bytes().len() as u32)?;
+            writer.write_all(stack_map_table.as_bytes())?;
+        } else {
+            writer.write_u16::<byteorder::BigEndian>(0)?; // No additional attributes
+        }
         Ok(())
+    }
+
+    fn needs_stack_map_table(&self) -> bool {
+        !self.stackmaptable.is_empty()
     }
 }
 

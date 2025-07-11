@@ -52,7 +52,7 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
                 is_strictfp: true,
                 is_synthetic: false,
                 name: meth_name,
-                descriptor: get_descriptor(&method).to_string(),
+                descriptor: get_descriptor(&method),
             };
             let method_output = class_output.write_method(method_metadata);
             translate_method(method, method_output)
@@ -195,20 +195,24 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
                     inkwell::IntPredicate::SLT => classfile::ComparisonType::LessThan,
                     inkwell::IntPredicate::SLE => classfile::ComparisonType::LessThanEqual,
                 });
-                // println!("IF_ICMP {predicate:?}");
+                let pre_operand_stackmap = e.java_method.get_current_stackframe();
                 // if the icmp is false, it'll execute the next instruction and compute operand one
-                translate_operand(v.get_operand(1), e);
+                translate_operand(v.get_operand(2), e);
                 // after we've computed operand one, we skip over operand two
                 let goto_target = e.java_method.emit_goto();
                 // This is where we compute operand two. If out icmp is true, we should land here
                 let op2 = e.java_method.current_location(); // Location where operand two is computer
-                translate_operand(v.get_operand(2), e);
+                e.java_method.set_current_stackframe(pre_operand_stackmap.clone()); // We only get here via the icmp which is before any operands were pushed to the stack
+                translate_operand(v.get_operand(1), e);
+                let post_operand_stackmap = e.java_method.get_current_stackframe();
                 // This is after we compute operand two, this is where out goto should land
                 let after_select = e.java_method.current_location();
 
                 // Set the targets
                 e.java_method.set_target(icmp_target, op2);
                 e.java_method.set_target(goto_target, after_select);
+                e.java_method.record_stackframe(op2, pre_operand_stackmap);
+                e.java_method.record_stackframe(after_select, post_operand_stackmap);
             } else {
                 todo!();
             }
