@@ -27,6 +27,7 @@ use std::rc::Rc;
 use std::path::Path;
 
 use codegen_llvm::LlvmCodegenBackend;
+use jvlm::linker;
 use rustc_codegen_ssa::back::link::link_binary;
 use rustc_codegen_ssa::base::codegen_crate;
 use rustc_codegen_ssa::traits::{CodegenBackend, ExtraBackendMethods, WriteBackendMethods};
@@ -35,9 +36,11 @@ use rustc_data_structures::fx::FxIndexMap;
 use jvlm::options::JvlmCompileOptions;
 use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
+use rustc_middle::middle::dependency_format::Linkage;
 use rustc_middle::ty::TyCtxt;
+use rustc_session::output::out_filename;
 use rustc_session::Session;
-use rustc_session::config::OutputFilenames;
+use rustc_session::config::{CrateType, OutputFilenames, OutputType};
 
 #[derive(Clone)]
 #[repr(transparent)]
@@ -94,7 +97,71 @@ impl CodegenBackend for JvlmBackend {
     }
 
     fn link(&self, sess: &Session, codegen_results: CodegenResults, outputs: &OutputFilenames) {
-        self.llvm.link(sess, codegen_results, outputs);
+        for crate_type in codegen_results.crate_info.crate_types {
+            if outputs.outputs.should_link() {
+                let output = out_filename(
+                    sess,
+                    crate_type,
+                    outputs,
+                    codegen_results.crate_info.local_crate_name,
+                );
+                let crate_name = format!("{}", codegen_results.crate_info.local_crate_name);
+                let out_filename = output.file_for_writing(
+                    outputs,
+                    OutputType::Exe,
+                    &crate_name,
+                    sess.invocation_temp.as_deref(),
+                );
+                match crate_type {
+                    CrateType::Cdylib => {
+                        let mut object_files = vec![];
+
+                        // TODO wtf do we do with natives
+
+                        // Local crate object files
+                        codegen_results.modules.iter().filter_map(|m| m.object.as_ref()).for_each(|o| object_files.push(o));
+                        if matches!(crate_type, CrateType::Dylib | CrateType::ProcMacro)
+                            && let Some(meta_module) = &codegen_results.metadata_module
+                            && let Some(meta_obj) = &meta_module.object
+                        {
+                            object_files.push(meta_obj);
+                        }
+                        if let Some(obj) = codegen_results.allocator_module.as_ref().and_then(|m| m.object.as_ref()) {
+                            object_files.push(obj);
+                        }
+
+                        // Dependency crates
+                        let mut archive_files = vec![];
+                        let linkage_info = codegen_results
+                            .crate_info
+                            .dependency_formats
+                            .get(&crate_type)
+                            .expect("failed to find crate type in dependency format list");
+                        for &cnum in &codegen_results.crate_info.used_crates {
+                            let linkage = linkage_info[cnum];
+                            match linkage {
+                                Linkage::Static | Linkage::IncludedFromDylib | Linkage::NotLinked => {
+                                    let src = &codegen_results.crate_info.used_crate_source[&cnum];
+                                    let cratepath = &src.rlib.as_ref().unwrap().0;
+                                    archive_files.push(cratepath);
+                                }
+                                Linkage::Dynamic => {
+                                    // We don't really need to do anything specific for dynamic dependencies.
+                                    // We could add them to the manifest in the future maybe
+                                }
+                            }
+                        }
+
+                        // Run the linker
+                        // TODO add archive_files
+                        let source_jars = object_files.iter().map(|f| File::open(f).unwrap());
+                        let output = File::create(out_filename).unwrap();
+                        linker::link(source_jars, output).unwrap();
+                    }
+                    _ => todo!()
+                }
+            }
+        }
     }
 
     fn target_config(&self, _sess: &Session) -> rustc_codegen_ssa::TargetConfig {

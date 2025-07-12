@@ -5,4 +5,10 @@ name = "simple_add"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release]
+panic = "abort"
+
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]

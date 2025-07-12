@@ -7,6 +7,7 @@ use zip::{write::SimpleFileOptions, ZipWriter};
 
 mod classfile;
 pub mod options;
+pub mod linker;
 
 pub type LlvmModule<'a> = Module<'a>;
 
@@ -94,7 +95,7 @@ fn get_descriptor_entry(v: AnyTypeEnum<'_>) -> DescriptorEntry {
             33..=64 => DescriptorEntry::Long,
             _ => todo!()
         },
-        AnyTypeEnum::PointerType(_) => todo!(),
+        AnyTypeEnum::PointerType(_) => DescriptorEntry::Class("java/lang/Object".into()),
         AnyTypeEnum::StructType(_) => todo!(),
         AnyTypeEnum::VectorType(_) => todo!(),
         AnyTypeEnum::ScalableVectorType(_) => todo!(),
