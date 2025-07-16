@@ -67,8 +67,9 @@ fn translate_method<W: Write>(f: FunctionValue<'_>, method_writer: MethodWriter<
     let mut translator = FunctionTranslationContext::new(f.get_params(), method_writer);
     for block in f.get_basic_blocks() {
         translator.record_start_of_basic_block(&block);
-        let terminator = block.get_terminator().unwrap();
-        translate(terminator.as_any_value_enum(), &mut translator);
+        for instr in block.get_instructions() {
+            translate(instr.as_any_value_enum(), &mut translator);
+        }
     }
 }
 
@@ -103,17 +104,9 @@ fn get_descriptor_entry(v: AnyTypeEnum<'_>) -> DescriptorEntry {
     }
 }
 
+/// Allocates a slot in java's local variable table for an llvm value and emits java bytecode to store the value there.
+/// If the value is of type void, only the computation is done and no slot is allocated.
 fn translate<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx, 'class_writer, W>) {
-    if let Some(info) = e.already_computed.get(&v) {
-        // Instruction was already computed
-        e.java_method.emit_load(get_java_type(v.get_type()), info.stored_in_slot);
-        return;
-    }
-
-    if let Some(i) = e.params.get(&v) {
-        e.java_method.emit_load(get_java_type(v.get_type()), *i);
-        return;
-    }
     match v {
         AnyValueEnum::ArrayValue(array_value) => todo!(),
         AnyValueEnum::IntValue(int_value) => {
@@ -136,6 +129,37 @@ fn translate<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut Funct
         AnyValueEnum::InstructionValue(instruction_value) => translate_instruction(instruction_value, e),
         AnyValueEnum::MetadataValue(metadata_value) => todo!(),
     }
+
+    let ty = v.get_type();
+    if !matches!(ty, AnyTypeEnum::VoidType(_)) {
+        let s = e.get_next_slot();
+        e.java_method.emit_store(get_java_type(v.as_any_value_enum().get_type()), s);
+    }
+}
+
+fn load_operand<'ctx, W: Write>(operand: Option<Either<BasicValueEnum<'ctx>, BasicBlock<'ctx>>>, e: &mut FunctionTranslationContext<'ctx, '_, W>) {
+    let operand = operand.unwrap();
+    match operand {
+        inkwell::Either::Left(operand) => {
+            load(operand.as_any_value_enum(), e);
+        },
+        inkwell::Either::Right(_) => todo!(),
+    }
+}
+
+/// Loads a llvm ssa value onto the java stack
+fn load<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx, 'class_writer, W>) {    
+    // It's part of the params, load it from there
+    if let Some(i) = e.params.get(&v) {
+        e.java_method.emit_load(get_java_type(v.get_type()), *i);
+        return;
+    }
+    // Find out where it's stored, and load that
+    if let Some(info) = e.ssa_values.get(&v) {
+        e.java_method.emit_load(get_java_type(v.get_type()), info.stored_in_slot);
+        return;
+    }
+    panic!()
 }
 
 /// Compute the type with which a node is stored/retrieved in the java local variable table
@@ -153,29 +177,19 @@ fn get_java_type(v: AnyTypeEnum<'_>) -> JavaType {
     }
 }
 
-/// Should be called after any value was computed, to prevent things from being computed twice (with potential side-effects)
-fn store_result<'ctx, W: Write>(v: impl AnyValue<'ctx> + HasUsageInfo, e: &mut FunctionTranslationContext<'ctx, '_, W>) {
-    // We only need to store results if the value is used more than once
-    if v.is_used_more_than_once() {
-        let s = e.get_next_slot();
-        e.java_method.emit_dup();
-        e.java_method.emit_store(get_java_type(v.as_any_value_enum().get_type()), s);
-        e.already_computed.insert(v.as_any_value_enum(), InstructionStatus { stored_in_slot: s });
-    }
-}
-
+/// Translates llvm instructions. Inputs/outputs are done via the java stack
 fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut FunctionTranslationContext<'ctx, '_, W>) {
     match v.get_opcode() {
         InstructionOpcode::Add => {
-            v.get_operands().for_each(|o| translate_operand(o, e));
+            v.get_operands().for_each(|o| load_operand(o, e));
             e.java_method.emit_add(JavaType::Int); // TODO
         },
         InstructionOpcode::Mul => {
-            v.get_operands().for_each(|o| translate_operand(o, e));
+            v.get_operands().for_each(|o| load_operand(o, e));
             e.java_method.emit_mul(JavaType::Int); // TODO
         },
         InstructionOpcode::Return => {
-            v.get_operands().for_each(|o| translate_operand(o, e));
+            v.get_operands().for_each(|o| load_operand(o, e));
             e.java_method.emit_return(Some(JavaType::Int)); // TODO
         },
         InstructionOpcode::Br => {
@@ -191,7 +205,7 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
         InstructionOpcode::Select => {
             if v.get_operand(0).is_some_and(|o| o.left().is_some_and(|o| o.as_instruction_value().is_some_and(|o| o.get_opcode() == InstructionOpcode::ICmp))) {
                 let icmp = v.get_operand(0).unwrap().unwrap_left().as_instruction_value().unwrap();
-                icmp.get_operands().for_each(|o| translate_operand(o, e));
+                icmp.get_operands().for_each(|o| load_operand(o, e));
                 let predicate = icmp.get_icmp_predicate().unwrap();
                 
                 // TODO figure out how to deal with signed-ness
@@ -209,13 +223,13 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
                 });
                 let pre_operand_stackmap = e.java_method.get_current_stackframe();
                 // if the icmp is false, it'll execute the next instruction and compute operand one
-                translate_operand(v.get_operand(2), e);
+                load_operand(v.get_operand(2), e);
                 // after we've computed operand one, we skip over operand two
                 let goto_target = e.java_method.emit_goto();
                 // This is where we compute operand two. If out icmp is true, we should land here
                 let op2 = e.java_method.current_location(); // Location where operand two is computer
                 e.java_method.set_current_stackframe(pre_operand_stackmap.clone()); // We only get here via the icmp which is before any operands were pushed to the stack
-                translate_operand(v.get_operand(1), e);
+                load_operand(v.get_operand(1), e);
                 let post_operand_stackmap = e.java_method.get_current_stackframe();
                 // This is after we compute operand two, this is where out goto should land
                 let after_select = e.java_method.current_location();
@@ -231,22 +245,13 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
         }
         _ => todo!("{:?}", v)
     }
-    store_result(v, e);
-}
-
-fn translate_operand<'ctx, W: Write>(operand: Option<Either<BasicValueEnum<'ctx>, BasicBlock<'ctx>>>, e: &mut FunctionTranslationContext<'ctx, '_, W>) {
-    let operand = operand.unwrap();
-    match operand {
-        inkwell::Either::Left(operand) => {
-            translate(operand.as_any_value_enum(), e);
-        },
-        inkwell::Either::Right(_) => todo!(),
-    }
 }
 
 struct FunctionTranslationContext<'ctx, 'class_writer, W: Write> {
     params: HashMap<AnyValueEnum<'ctx>, u16>,
-    already_computed: HashMap<AnyValueEnum<'ctx>, InstructionStatus>,
+    /// Information about the ssa values of the llvm instructions.
+    /// This basically means this has information about all the results of all the instructions
+    ssa_values: HashMap<AnyValueEnum<'ctx>, InstructionStatus>,
     next_slot: u16,
     java_method: MethodWriter<'class_writer, W>,
     basic_block_tracker: BasicBlockTracker<'ctx>,
@@ -303,6 +308,7 @@ impl <'ctx, W: Write>  FunctionTranslationContext<'ctx, '_, W> {
 }
 
 struct InstructionStatus {
+    /// Which slot in java's local variable table this is stored in
     stored_in_slot: u16
 }
 
@@ -311,7 +317,7 @@ impl <W: Write> FunctionTranslationContext<'_, '_, W> {
         let next_slot = params.len() as u16;
         return FunctionTranslationContext {
             params: params.into_iter().enumerate().map(|(a,b)| (b.as_any_value_enum(),a as u16)).collect(),
-            already_computed: HashMap::new(),
+            ssa_values: HashMap::new(),
             java_method: method,
             next_slot,
             basic_block_tracker: Default::default()
