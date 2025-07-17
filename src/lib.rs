@@ -134,6 +134,7 @@ fn translate<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut Funct
     if !matches!(ty, AnyTypeEnum::VoidType(_)) {
         let s = e.get_next_slot();
         e.java_method.emit_store(get_java_type(v.as_any_value_enum().get_type()), s);
+        e.ssa_values.insert(v, InstructionStatus { stored_in_slot: s });
     }
 }
 
