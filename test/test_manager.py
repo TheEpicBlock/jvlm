@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import glob
-from typing import Callable, Protocol, TypeVar, overload, override
+import re
+from typing import Callable, Literal, Protocol, TypeVar, overload, override
 import subprocess
 import os
 import shutil
@@ -15,27 +16,10 @@ import typing
 
 mainDir = Path(__file__).parent.resolve()
 
+JSHELL = "jshell"
 CLANG = "clang"
-CFLAGS = [
-	"-O3"
-]
 CARGO = "cargo"
 CODEGEN_BACKEND = mainDir / "../target/debug/librustc_codegen_jvlm.so"
-
-def compileC(input: Path, output: Path):
-	print(f"C: Compiling {input} to {output}")
-	output.parent.mkdir(exist_ok=True, parents=True)
-	r = subprocess.call([
-		CLANG,
-	] + CFLAGS + [
-		"-emit-llvm",
-		"-c",
-		input,
-		"-o",
-		output
-	])
-	if r != 0:
-		raise Exception(f"Failed to compile, status code {r}")
 
 def compileRust(input: Path):
 	print(f"Rust: Compiling {input}")
@@ -63,6 +47,19 @@ class TimeoutFailure(Failure):
 	def short_err(self) -> str:
 		return f"Command {self.cmd} timed out after {self.time} seconds"
 @dataclass
+class NoTimeoutFailure(Failure):
+	time: float
+	@override
+	def short_err(self) -> str:
+		return f"Test did not time out after {self.time} seconds"
+@dataclass
+class AssertFailure(Failure):
+	expected: str
+	found: str
+	@override
+	def short_err(self) -> str:
+		return f"Expected '{self.expected}', found '{self.found}'"
+@dataclass
 class StatusCodeFailure(Failure):
 	cmd: str
 	code: int
@@ -85,13 +82,34 @@ class CompileFailure(Failure):
 	@override
 	def full_err(self) -> str:
 		return f"Failed to compile {self.lang_name}/{self.segment}: {self.inner.full_err()}"
+@dataclass
+class TestFailure(Failure):
+	lang_name: str
+	segment: str
+	inner: Failure
+	@override
+	def short_err(self) -> str:
+		return f"Test failure {self.lang_name}/{self.segment}: {self.inner.short_err()}"
+	@override
+	def full_err(self) -> str:
+		return f"Test failure {self.lang_name}/{self.segment}: {self.inner.full_err()}"
 
-def exec(args: list[str | Path], cwd: str | bytes | os.PathLike[str] | os.PathLike[bytes] | None = None, timeout: float | None = None) -> Failure | None:
+@overload
+def exec(args: list[str | Path], return_output: Literal[True], cwd: str | bytes | os.PathLike[str] | os.PathLike[bytes] | None = None, input: str | None = None, timeout: float | None = None) -> Failure | str:
+	...
+@overload
+def exec(args: list[str | Path], return_output: Literal[False] = False, cwd: str | bytes | os.PathLike[str] | os.PathLike[bytes] | None = None, input: str | None = None, timeout: float | None = None) -> Failure | None:
+	...
+def exec(args: list[str | Path], return_output: bool = False, cwd: str | bytes | os.PathLike[str] | os.PathLike[bytes] | None = None, input: str | None = None, timeout: float | None = None) -> Failure | str | None:
 	try:
-		r = subprocess.run(args, cwd=cwd, timeout=timeout, capture_output=True)
+		r = subprocess.run(args, cwd=cwd, timeout=timeout, capture_output=True, input=(input.encode() if input is not None else None))
 		if r.returncode != 0:
 			return StatusCodeFailure(str(args[0]), r.returncode, r.stdout, r.stderr)
-	except TimeoutError:
+		if return_output:
+			return str(r.stdout)
+		else:
+			return None
+	except subprocess.TimeoutExpired:
 		return TimeoutFailure(str(args[0]), -1 if timeout is None else timeout)
 
 class Language(ABC):
@@ -126,6 +144,9 @@ class Language(ABC):
 	@abstractmethod
 	def compileJar(self, segment: str) -> Path | Failure:
 		...
+	@abstractmethod
+	def get_tests_declaration(self, segment: str) -> str:
+		...
 
 class RustLanguage(Language):
 	@override
@@ -145,6 +166,9 @@ class RustLanguage(Language):
 	@override
 	def compileJar(self, segment: str) -> Path | Failure:
 		...
+	@override
+	def get_tests_declaration(self, segment: str) -> str:
+		return ""
 
 class CLanguage(Language):
 	@override
@@ -160,14 +184,26 @@ class CLanguage(Language):
 	@override
 	def list_all_tests(self, dir: str = "", recurse: bool = True) -> Iterable[str]:
 		return (f"{f}" for f in glob.glob("**/*.c" if recurse else "*.c", root_dir=(self.base_dir / dir), recursive=recurse))
+
+	@override
+	def get_tests_declaration(self, segment: str) -> str:
+		input_file = self.base_dir / segment
+		return next(re.finditer("/\\*(.*)\\*/", input_file.read_text(), re.MULTILINE | re.DOTALL)).group(1)
+
 	@override
 	def compileJar(self, segment: str) -> Path | Failure:
 		input_file = self.base_dir / segment
 		tmp_file = mainDir / "out" / "c" / (segment.removesuffix(".c")+".bc")
 		tmp_file.parent.mkdir(parents=True, exist_ok=True)
+
+		# tests declaration also includes compiler flags
+		cflags = next(re.finditer("^compile\\s(.*)$", self.get_tests_declaration(segment), re.MULTILINE)).group(1)
+		cflags = ("" if not isinstance(cflags, str) else cflags)
+		cflags = cflags.split(" ")
+
 		r = exec([
 			CLANG,
-		] + CFLAGS + [
+		] + cflags + [
 			"-emit-llvm",
 			"-c",
 			input_file,
@@ -199,6 +235,45 @@ languages = {
 }
 for (k,v) in languages.items():
 	v.initialize(k, mainDir)
+
+
+def parse_test_declaration(declaration: str) -> list[Callable[[Path], Failure | None]]:
+	tests: list[Callable[[Path], Failure | None]] = []
+	lines = declaration.splitlines()
+	i = 0
+	while i < len(lines):
+		cLine = lines[i]
+		if cLine.startswith("java_run"):
+			run_str = cLine.removeprefix("java_run").strip()
+			nLine = lines[i+1]
+			if nLine.startswith("expect_timeout"):
+				expect = nLine.removeprefix("expect_timeout").removeprefix("expect_timeout").strip()
+				if not expect.endswith("seconds"):
+					raise Exception("Invalid syntax for expect_timeout")
+				timeout = float(expect.removesuffix("seconds").strip())
+				def run_test(p: Path) -> Failure | None:
+					try:
+						_ = subprocess.run([JSHELL, "-c", p, "-"], capture_output=True, input=f"System.out.println({run_str})".encode(), timeout=timeout)
+						return NoTimeoutFailure(timeout)
+					except subprocess.TimeoutExpired:
+						return None
+				tests.append(run_test)
+			elif nLine.startswith("expect"):
+				expect = nLine.removeprefix("expect").strip()
+				def run_test(p: Path) -> Failure | None:
+					r = exec([JSHELL, "-c", p, "-"], input=f"System.out.println({run_str})", return_output=True, timeout=300)
+					if isinstance(r, Failure):
+						return r
+					else:
+						if r.strip() != expect:
+							return AssertFailure(expect, r.strip())
+						else:
+							return None
+				tests.append(run_test)
+			else:
+				raise Exception("java_run has no expect")
+		i += 1
+	return tests
 
 def main():
 	if len(sys.argv) <= 1:
@@ -266,13 +341,13 @@ def main():
 							pass
 		tests = unique(a())
 
-	def do_jar(tests: Iterable[tuple[Language, str]]) -> Iterable[Path | Failure]:
+	def do_jar(tests: Iterable[tuple[Language, str]]) -> Iterable[tuple[tuple[Language, str], Path | Failure]]:
 		for (l, s) in tests:
 			v = l.compileJar(s)
 			if isinstance(v, Failure):
-				yield CompileFailure(l.name, s, v)
+				yield ((l,s),CompileFailure(l.name, s, v))
 			else:
-				yield v
+				yield ((l,s),v)
 	
 	# Alrighty, we know which tests to operate on now
 	match mode:
@@ -283,7 +358,7 @@ def main():
 			pass
 		case "jar":
 			failures: list[Failure] = []
-			for j in do_jar(tests):
+			for (_, j) in do_jar(tests):
 				if isinstance(j, Failure):
 					failures.append(j)
 				else:
@@ -295,7 +370,26 @@ def main():
 					print(f"!! {f.short_err()}")
 			sys.exit(2 if len(failures) > 0 else 0)
 		case "test":
-			pass
+			failures: list[Failure] = []
+			for (tst, j) in do_jar(tests):
+				if isinstance(j, Failure):
+					failures.append(j)
+				else:
+					# test declaration contains which tests to do
+					test_declaration = tst[0].get_tests_declaration(tst[1])
+					test_runners = parse_test_declaration(test_declaration)
+					anyfail = False
+					for r in test_runners:
+						result = r(j)
+						if result is not None:
+							failures.append(TestFailure(tst[0].name, tst[1], result))
+					if not anyfail:
+						print(f"{tst[0].name}/{tst[1]}: Success on {len(test_runners)} tests")
+			if len(failures) == 1:
+				print(f"!! {failures[0].full_err()}")
+			elif len(failures) > 1:
+				for f in failures:
+					print(f"!! {f.short_err()}")
 
 T = TypeVar('T')
 def unique(iter: Iterable[T]) -> Iterable[T]:
