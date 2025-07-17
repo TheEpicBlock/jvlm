@@ -107,7 +107,7 @@ def exec(args: list[str | Path], return_output: bool = False, cwd: str | bytes |
 		if r.returncode != 0:
 			return StatusCodeFailure(str(args[0]), r.returncode, r.stdout, r.stderr)
 		if return_output:
-			return str(r.stdout)
+			return r.stdout.decode(errors="replace")
 		else:
 			return None
 	except subprocess.TimeoutExpired:
