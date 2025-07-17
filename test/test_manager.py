@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 import typing
+from zipfile import ZipFile
 
 mainDir = Path(__file__).parent.resolve()
 
@@ -285,6 +286,8 @@ def main():
 			pass
 		case "show_ir":
 			pass
+		case "javap":
+			pass
 		case "jar":
 			pass
 		case "test":
@@ -356,6 +359,25 @@ def main():
 			pass
 		case "show_ir":
 			pass
+		case "javap":
+			import zipfile
+			jars: list[Path] = []
+			failures: list[Failure] = []
+			for (_, j) in do_jar(tests):
+				if isinstance(j, Failure):
+					failures.append(j)
+				else:
+					jars.append(j)
+			if len(failures) > 0:
+				for f in failures:
+					print(f"!! {f.short_err()}")
+				sys.exit(2)
+			classes: list[str] = []
+			for jar in jars:
+				z = ZipFile(jar)
+				for cl in z.filelist:
+					classes.append(f"jar:{jar.as_uri()}!/{cl.filename}")
+			sys.exit(subprocess.check_call(["javap", "-c"] + classes))
 		case "jar":
 			failures: list[Failure] = []
 			for (_, j) in do_jar(tests):
