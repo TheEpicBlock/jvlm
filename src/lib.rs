@@ -159,7 +159,7 @@ fn load<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTr
         e.java_method.emit_load(get_java_type(v.get_type()), info.stored_in_slot);
         return;
     }
-    panic!()
+    panic!("Trying to load uncomputed value {v}")
 }
 
 /// Compute the type with which a node is stored/retrieved in the java local variable table
