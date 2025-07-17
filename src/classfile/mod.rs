@@ -297,7 +297,25 @@ impl <W> MethodWriter<'_, W> where W: Write {
         // There is a wide variant for goto, but our code is architectured in a way that
         // assumes the target has a constant bit width. Luckily, there are other factors limiting
         // the size of a java method to 2^16 bytes, so the wide variant goes unused.
-        self.code().write_u8(0x9F + (ty as u8)); // GOTO
+        self.code().write_u8(0x9F + (ty as u8)); // opcode
+        let j = self.code_immutable().get_wpos();
+        self.code().write_u16(0xFEFE); // Temporary branch target
+        return InstructionTarget {
+            instruction_location: i,
+            jump_location: j
+        };
+    }
+
+    /// Comparison between an int from the stack and constant zero
+    #[must_use]
+    pub fn emit_if(&mut self, ty: ComparisonType) -> InstructionTarget {
+        self.record_pop();
+
+        let i = self.current_location();
+        // There is a wide variant for goto, but our code is architectured in a way that
+        // assumes the target has a constant bit width. Luckily, there are other factors limiting
+        // the size of a java method to 2^16 bytes, so the wide variant goes unused.
+        self.code().write_u8(0x99 + (ty as u8)); // opcode
         let j = self.code_immutable().get_wpos();
         self.code().write_u16(0xFEFE); // Temporary branch target
         return InstructionTarget {

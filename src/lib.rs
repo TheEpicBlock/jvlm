@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io::{Seek, Write}};
 
 use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, MethodMetadata, MethodWriter};
-use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
+use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
 use options::{FunctionNameMapper, JvlmCompileOptions};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
@@ -68,7 +68,7 @@ fn translate_method<W: Write>(f: FunctionValue<'_>, method_writer: MethodWriter<
     for block in f.get_basic_blocks() {
         translator.record_start_of_basic_block(&block);
         for instr in block.get_instructions() {
-            translate(instr.as_any_value_enum(), &mut translator);
+            translate_and_store(instr.as_any_value_enum(), &mut translator);
         }
     }
 }
@@ -106,6 +106,17 @@ fn get_descriptor_entry(v: AnyTypeEnum<'_>) -> DescriptorEntry {
 
 /// Allocates a slot in java's local variable table for an llvm value and emits java bytecode to store the value there.
 /// If the value is of type void, only the computation is done and no slot is allocated.
+fn translate_and_store<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx, 'class_writer, W>) {
+    translate(v, e);
+    
+    let ty = v.get_type();
+    if !matches!(ty, AnyTypeEnum::VoidType(_)) {
+        let s = e.get_next_slot();
+        e.java_method.emit_store(get_java_type(v.as_any_value_enum().get_type()), s);
+        e.ssa_values.insert(v, InstructionStatus { stored_in_slot: s });
+    }
+}
+
 fn translate<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx, 'class_writer, W>) {
     match v {
         AnyValueEnum::ArrayValue(array_value) => todo!(),
@@ -128,13 +139,6 @@ fn translate<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut Funct
         AnyValueEnum::ScalableVectorValue(scalable_vector_value) => todo!(),
         AnyValueEnum::InstructionValue(instruction_value) => translate_instruction(instruction_value, e),
         AnyValueEnum::MetadataValue(metadata_value) => todo!(),
-    }
-
-    let ty = v.get_type();
-    if !matches!(ty, AnyTypeEnum::VoidType(_)) {
-        let s = e.get_next_slot();
-        e.java_method.emit_store(get_java_type(v.as_any_value_enum().get_type()), s);
-        e.ssa_values.insert(v, InstructionStatus { stored_in_slot: s });
     }
 }
 
@@ -160,7 +164,10 @@ fn load<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTr
         e.java_method.emit_load(get_java_type(v.get_type()), info.stored_in_slot);
         return;
     }
-    panic!("Trying to load uncomputed value {v}")
+
+    // Value was not computed by an instruction. Hopefully this should only happen for constants, which
+    // we don't really need to store in the local variable table anyway and we can just create them whenever needed
+    translate(v, e);
 }
 
 /// Compute the type with which a node is stored/retrieved in the java local variable table
@@ -203,46 +210,63 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
                 todo!()
             }
         },
-        InstructionOpcode::Select => {
-            if v.get_operand(0).is_some_and(|o| o.left().is_some_and(|o| o.as_instruction_value().is_some_and(|o| o.get_opcode() == InstructionOpcode::ICmp))) {
-                let icmp = v.get_operand(0).unwrap().unwrap_left().as_instruction_value().unwrap();
-                icmp.get_operands().for_each(|o| load_operand(o, e));
-                let predicate = icmp.get_icmp_predicate().unwrap();
-                
-                // TODO figure out how to deal with signed-ness
-                let icmp_target = e.java_method.emit_if_icmp(match predicate {
-                    inkwell::IntPredicate::EQ => classfile::ComparisonType::Equal,
-                    inkwell::IntPredicate::NE => classfile::ComparisonType::NotEqual,
-                    inkwell::IntPredicate::UGT => classfile::ComparisonType::GreaterThan,
-                    inkwell::IntPredicate::UGE => classfile::ComparisonType::GreaterThanEqual,
-                    inkwell::IntPredicate::ULT => classfile::ComparisonType::LessThan,
-                    inkwell::IntPredicate::ULE => classfile::ComparisonType::LessThanEqual,
-                    inkwell::IntPredicate::SGT => classfile::ComparisonType::GreaterThan,
-                    inkwell::IntPredicate::SGE => classfile::ComparisonType::GreaterThanEqual,
-                    inkwell::IntPredicate::SLT => classfile::ComparisonType::LessThan,
-                    inkwell::IntPredicate::SLE => classfile::ComparisonType::LessThanEqual,
-                });
-                let pre_operand_stackmap = e.java_method.get_current_stackframe();
-                // if the icmp is false, it'll execute the next instruction and compute operand one
-                load_operand(v.get_operand(2), e);
-                // after we've computed operand one, we skip over operand two
-                let goto_target = e.java_method.emit_goto();
-                // This is where we compute operand two. If out icmp is true, we should land here
-                let op2 = e.java_method.current_location(); // Location where operand two is computer
-                e.java_method.set_current_stackframe(pre_operand_stackmap.clone()); // We only get here via the icmp which is before any operands were pushed to the stack
-                load_operand(v.get_operand(1), e);
-                let post_operand_stackmap = e.java_method.get_current_stackframe();
-                // This is after we compute operand two, this is where out goto should land
-                let after_select = e.java_method.current_location();
+        InstructionOpcode::ICmp => {
+            v.get_operands().for_each(|o| load_operand(o, e));
+            let predicate = v.get_icmp_predicate().unwrap();
+            
+            // TODO figure out how to deal with signed-ness
+            let icmp_target = e.java_method.emit_if_icmp(match predicate {
+                inkwell::IntPredicate::EQ => classfile::ComparisonType::Equal,
+                inkwell::IntPredicate::NE => classfile::ComparisonType::NotEqual,
+                inkwell::IntPredicate::UGT => classfile::ComparisonType::GreaterThan,
+                inkwell::IntPredicate::UGE => classfile::ComparisonType::GreaterThanEqual,
+                inkwell::IntPredicate::ULT => classfile::ComparisonType::LessThan,
+                inkwell::IntPredicate::ULE => classfile::ComparisonType::LessThanEqual,
+                inkwell::IntPredicate::SGT => classfile::ComparisonType::GreaterThan,
+                inkwell::IntPredicate::SGE => classfile::ComparisonType::GreaterThanEqual,
+                inkwell::IntPredicate::SLT => classfile::ComparisonType::LessThan,
+                inkwell::IntPredicate::SLE => classfile::ComparisonType::LessThanEqual,
+            });
+            let pre_operand_stackmap = e.java_method.get_current_stackframe();
+            // if the icmp is false, it'll execute the next instruction and compute operand one
+            e.java_method.emit_constant_int(0);
+            // after we've computed operand one, we skip over operand two
+            let goto_target = e.java_method.emit_goto();
+            // This is where we compute operand two. If out icmp is true, we should land here
+            let op2 = e.java_method.current_location(); // Location where operand two is computer
+            e.java_method.set_current_stackframe(pre_operand_stackmap.clone()); // We only get here via the icmp which is before any operands were pushed to the stack
+            e.java_method.emit_constant_int(1);
+            let post_operand_stackmap = e.java_method.get_current_stackframe();
+            // This is after we compute operand two, this is where out goto should land
+            let after_select = e.java_method.current_location();
 
-                // Set the targets
-                e.java_method.set_target(icmp_target, op2);
-                e.java_method.set_target(goto_target, after_select);
-                e.java_method.record_stackframe(op2, pre_operand_stackmap);
-                e.java_method.record_stackframe(after_select, post_operand_stackmap);
-            } else {
-                todo!();
-            }
+            // Set the targets
+            e.java_method.set_target(icmp_target, op2);
+            e.java_method.set_target(goto_target, after_select);
+            e.java_method.record_stackframe(op2, pre_operand_stackmap);
+            e.java_method.record_stackframe(after_select, post_operand_stackmap);
+        }
+        InstructionOpcode::Select => {
+            load_operand(v.get_operand(0), e);
+            let if_target = e.java_method.emit_if(classfile::ComparisonType::Equal);
+            let pre_operand_stackmap = e.java_method.get_current_stackframe();
+            // Didn't jump: condition is true
+            load_operand(v.get_operand(1), e);
+            // Jump over computation of second param
+            let goto_target = e.java_method.emit_goto();
+            // Now compute second param
+            let op2 = e.java_method.current_location();
+            e.java_method.set_current_stackframe(pre_operand_stackmap.clone()); // We only get here via the if jump which is before any operands were pushed to the stack
+            load_operand(v.get_operand(2), e);
+            let post_operand_stackmap = e.java_method.get_current_stackframe();
+            // This is after we compute operand two, this is where the goto should land
+
+            // Set the targets
+            let after_select = e.java_method.current_location();
+            e.java_method.set_target(if_target, op2);
+            e.java_method.set_target(goto_target, after_select);
+            e.java_method.record_stackframe(op2, pre_operand_stackmap);
+            e.java_method.record_stackframe(after_select, post_operand_stackmap);
         }
         _ => todo!("{:?}", v)
     }
