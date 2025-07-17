@@ -504,7 +504,7 @@ impl MethodData {
         writer.write_u16::<byteorder::BigEndian>(code_attribute)?; // That attribute is named "Code"
         writer.write_u32::<byteorder::BigEndian>((self.code.as_bytes().len() + 12 + stack_map_table.as_ref().map(|b| b.as_bytes().len() + 6).unwrap_or(0)) as u32)?;
         writer.write_u16::<byteorder::BigEndian>(self.max_stack_size as u16)?;
-        writer.write_u16::<byteorder::BigEndian>(1)?; // TODO: max-locals
+        writer.write_u16::<byteorder::BigEndian>(50)?; // TODO: max-locals
         writer.write_u32::<byteorder::BigEndian>(self.code.as_bytes().len() as u32)?;
         writer.write_all(self.code.as_bytes())?;
         writer.write_u16::<byteorder::BigEndian>(0)?; // No exception table
