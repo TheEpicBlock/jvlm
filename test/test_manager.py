@@ -146,6 +146,9 @@ class Language(ABC):
 	def compileJar(self, segment: str) -> Path | Failure:
 		...
 	@abstractmethod
+	def showLlvmir(self, segment: str):
+		...
+	@abstractmethod
 	def get_tests_declaration(self, segment: str) -> str:
 		...
 
@@ -166,6 +169,9 @@ class RustLanguage(Language):
 		return (f"{f}" for f in os.listdir(self.base_dir) if (self.base_dir / f / "Cargo.toml").exists())
 	@override
 	def compileJar(self, segment: str) -> Path | Failure:
+		...
+	@override
+	def showLlvmir(self, segment: str):
 		...
 	@override
 	def get_tests_declaration(self, segment: str) -> str:
@@ -191,20 +197,22 @@ class CLanguage(Language):
 		input_file = self.base_dir / segment
 		return next(re.finditer("/\\*(.*)\\*/", input_file.read_text(), re.MULTILINE | re.DOTALL)).group(1)
 
+	def get_compile_flags(self, segment: str) -> list[str]:
+		# tests declaration also includes compiler flags
+		cflags = next(re.finditer("^compile\\s(.*)$", self.get_tests_declaration(segment), re.MULTILINE)).group(1)
+		cflags = ("" if not isinstance(cflags, str) else cflags)
+		cflags = cflags.split(" ")
+		return cflags
+
 	@override
 	def compileJar(self, segment: str) -> Path | Failure:
 		input_file = self.base_dir / segment
 		tmp_file = mainDir / "out" / "c" / (segment.removesuffix(".c")+".bc")
 		tmp_file.parent.mkdir(parents=True, exist_ok=True)
 
-		# tests declaration also includes compiler flags
-		cflags = next(re.finditer("^compile\\s(.*)$", self.get_tests_declaration(segment), re.MULTILINE)).group(1)
-		cflags = ("" if not isinstance(cflags, str) else cflags)
-		cflags = cflags.split(" ")
-
 		r = exec([
 			CLANG,
-		] + cflags + [
+		] + self.get_compile_flags(segment) + [
 			"-emit-llvm",
 			"-c",
 			input_file,
@@ -229,6 +237,19 @@ class CLanguage(Language):
 			return r
 		return jar_file
 
+	@override
+	def showLlvmir(self, segment: str):
+		input_file = self.base_dir / segment
+		_ = subprocess.check_call([
+			CLANG,
+		] + self.get_compile_flags(segment) + [
+			"-S",
+			"-emit-llvm",
+			"-c",
+			input_file,
+			"-o",
+			"-"
+		])
 
 languages = {
 	"c": CLanguage(),
@@ -358,7 +379,8 @@ def main():
 			print(list(f"{l.name}/{s}" for (l, s) in tests))
 			pass
 		case "show_ir":
-			pass
+			for (l, s) in tests:
+				l.showLlvmir(s)
 		case "javap":
 			import zipfile
 			jars: list[Path] = []
