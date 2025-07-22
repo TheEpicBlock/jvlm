@@ -1,10 +1,12 @@
 use std::{collections::HashMap, io::{Seek, Write}};
 
-use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, MethodMetadata, MethodWriter};
+use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
 use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
+use memory::{MemoryStrategy, UnsafeMemorySegmentStrategy};
 use options::{FunctionNameMapper, JvlmCompileOptions};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
+mod memory;
 mod classfile;
 pub mod options;
 pub mod linker;
@@ -117,7 +119,7 @@ fn translate_and_store<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: 
     }
 }
 
-fn translate<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx, 'class_writer, W>) {
+fn translate<'ctx, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx, '_, W>) {
     match v {
         AnyValueEnum::ArrayValue(array_value) => todo!(),
         AnyValueEnum::IntValue(int_value) => {
@@ -153,7 +155,7 @@ fn load_operand<'ctx, W: Write>(operand: Option<Either<BasicValueEnum<'ctx>, Bas
 }
 
 /// Loads a llvm ssa value onto the java stack
-fn load<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx, 'class_writer, W>) {    
+fn load<'ctx, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx, '_, W>) {    
     // It's part of the params, load it from there
     if let Some(i) = e.params.get(&v) {
         e.java_method.emit_load(get_java_type(v.get_type()), *i);
@@ -272,13 +274,14 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
     }
 }
 
-struct FunctionTranslationContext<'ctx, 'class_writer, W: Write> {
+struct FunctionTranslationContext<'ctx, 'class_writer, W: Write, M: memory::MemoryInstructionEmitter = memory::UnsafeMemorySegmentEmitter> {
     params: HashMap<AnyValueEnum<'ctx>, u16>,
     /// Information about the ssa values of the llvm instructions.
     /// This basically means this has information about all the results of all the instructions
     ssa_values: HashMap<AnyValueEnum<'ctx>, InstructionStatus>,
-    next_slot: u16,
+    next_slot: LVTi,
     java_method: MethodWriter<'class_writer, W>,
+    memory_allocation_info: M,
     basic_block_tracker: BasicBlockTracker<'ctx>,
 }
 
@@ -290,7 +293,7 @@ struct BasicBlockTracker<'ctx> {
     to_write: HashMap<BasicBlock<'ctx>, Vec<InstructionTarget>>,
 }
 
-impl <'ctx, W: Write>  FunctionTranslationContext<'ctx, '_, W> {
+impl <'ctx, W: Write> FunctionTranslationContext<'ctx, '_, W> {
     /// Record the currect location in the [`MethodWriter`] to be the start of the given [`BasicBlock`] 
     fn record_start_of_basic_block(&mut self, block: &BasicBlock<'ctx>) {
         // We now have a resolved location for this block:
@@ -339,16 +342,19 @@ struct InstructionStatus {
 
 impl <W: Write> FunctionTranslationContext<'_, '_, W> {
     fn new<'ctx, 'class_writer>(params: Vec<BasicValueEnum<'ctx>>, method: MethodWriter<'class_writer, W>) -> FunctionTranslationContext<'ctx, 'class_writer, W> {
-        let next_slot = params.len() as u16;
+        let strat = UnsafeMemorySegmentStrategy;
+
+        let next_slot = params.len() as LVTi;
         return FunctionTranslationContext {
             params: params.into_iter().enumerate().map(|(a,b)| (b.as_any_value_enum(),a as u16)).collect(),
             ssa_values: HashMap::new(),
             java_method: method,
+            memory_allocation_info: strat.emitter_for_function(),
             next_slot,
             basic_block_tracker: Default::default()
         };
     }
-    fn get_next_slot(&mut self) -> u16 {
+    fn get_next_slot(&mut self) -> LVTi {
         let n = self.next_slot;
         self.next_slot += 1;
         return n;

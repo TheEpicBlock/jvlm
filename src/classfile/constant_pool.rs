@@ -47,7 +47,7 @@ impl ConstantPool {
 
 #[derive(Hash, PartialEq, Eq)]
 enum ConstantPoolEntry {
-    Utf8(String),
     Class(ConstantPoolReference),
+    Utf8(String),
     Int(i32),
 }

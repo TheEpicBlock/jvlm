@@ -7,6 +7,9 @@ use descriptor::{DescriptorEntry, FunctionDescriptor};
 mod constant_pool;
 pub(crate) mod descriptor;
 
+/// Index into the local variable table
+pub type LVTi = u16;
+
 pub struct ClassFileWriter<W: Write> {
     output: Option<W>,
     access_flag: u16,
@@ -236,6 +239,22 @@ impl <W> MethodWriter<'_, W> where W: Write {
                 JavaType::Reference => self.code().write_u8(0xb0),
             },
             None => self.code().write_u8(0xb1), // Void return
+        }
+    }
+
+    pub fn emit_iinc(&mut self, local_variable: LVTi, constant: i16) {
+        if let Some(local_variable) = u8::try_from(local_variable).ok() && 
+                let Some(constant) = i8::try_from(constant).ok() {
+            // Both variables fit in a single byte, write the normal version of IINC
+            self.code().write_u8(0x84); // IINC
+            self.code().write_u8(local_variable);
+            self.code().write_i8(constant);
+        } else {
+            // One of the two is too big, use a WIDE
+            self.code().write_u8(0xC4); // WIDE
+            self.code().write_u8(0x84); // IINC
+            self.code().write_u16(local_variable);
+            self.code().write_i16(constant);
         }
     }
 
