@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, io::{self, Write}};
 use bytebuffer::ByteBuffer;
 use byteorder::WriteBytesExt;
 use constant_pool::{ConstantPool, ConstantPoolReference};
-use descriptor::{DescriptorEntry, FunctionDescriptor};
+use descriptor::{DescriptorEntry, FieldDescriptor, MethodDescriptor};
 
 mod constant_pool;
 pub(crate) mod descriptor;
@@ -343,6 +343,24 @@ impl <W> MethodWriter<'_, W> where W: Write {
         };
     }
 
+    pub fn emit_getstatic(&mut self, class: impl AsRef<str>, field: impl AsRef<str>, ty: FieldDescriptor) {
+        let field_ref = self.class_writer.constant_pool.fieldref(class.as_ref().to_owned(), field.as_ref().to_owned(), ty.to_string());
+        self.code().write_u8(0xB2); // getstatic
+        self.code().write_u16(field_ref);
+        self.record_push_ty((&ty).into());
+    }
+
+    pub fn emit_invokestatic(&mut self, class: impl AsRef<str>, name: impl AsRef<str>, desc: MethodDescriptor) {
+        desc.0.iter().for_each(|_| { self.record_pop(); });
+        if let Some(return_type) = &desc.1 {
+            self.record_push_ty(return_type.into());
+        }
+
+        let method_ref = self.class_writer.constant_pool.methodref(class.as_ref().to_owned(), name.as_ref().to_owned(), desc.to_string());
+        self.code().write_u8(0xB8); // invokestatic
+        self.code().write_u16(method_ref);
+    }
+
     pub fn set_target(&mut self, target_index: InstructionTarget, target: CodeLocation) {
         let offset = target.0 - target_index.instruction_location.0;
         let wpos = self.code().get_wpos();
@@ -406,7 +424,7 @@ impl VerificationType {
     }
 }
 
-fn calculate_initial_stackframe(descriptor: &FunctionDescriptor) -> StackMapFrame {
+fn calculate_initial_stackframe(descriptor: &MethodDescriptor) -> StackMapFrame {
     StackMapFrame {
         stack: Vec::new(), // Stack starts empty
         locals: descriptor.0.iter().flat_map(|d| match d {
@@ -461,7 +479,7 @@ pub struct MethodMetadata {
     pub is_strictfp: bool,
     pub is_synthetic: bool,
     pub name: String,
-    pub descriptor: FunctionDescriptor,
+    pub descriptor: MethodDescriptor,
 }
 
 pub struct MethodData {
@@ -470,7 +488,7 @@ pub struct MethodData {
     desc_ref: ConstantPoolReference,
     code: ByteBuffer,
     max_stack_size: usize,
-    descriptor: FunctionDescriptor,
+    descriptor: MethodDescriptor,
     stackmaptable: BTreeMap<CodeLocation, StackMapFrame>,
 }
 
@@ -578,8 +596,8 @@ pub enum JavaType {
     Reference
 }
 
-impl From<DescriptorEntry> for JavaType {
-    fn from(value: DescriptorEntry) -> Self {
+impl From<&DescriptorEntry> for JavaType {
+    fn from(value: &DescriptorEntry) -> Self {
         match value {
             DescriptorEntry::Byte => JavaType::Int,
             DescriptorEntry::Char => JavaType::Int,

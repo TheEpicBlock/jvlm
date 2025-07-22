@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, io::{Seek, Write}};
 
-use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
+use classfile::{descriptor::{DescriptorEntry, MethodDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
 use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
 use memory::{MemoryStrategy, MemorySegmentStrategy};
 use options::{FunctionNameMapper, JvlmCompileOptions};
@@ -84,10 +84,10 @@ fn translate_method<W: Write>(f: FunctionValue<'_>, method_writer: MethodWriter<
     }
 }
 
-fn get_descriptor(function: &FunctionValue<'_>) -> FunctionDescriptor {
+fn get_descriptor(function: &FunctionValue<'_>) -> MethodDescriptor {
     let params = function.get_params().iter().map(|p| get_descriptor_entry(p.get_type().as_any_type_enum())).collect();
     let return_ty = function.get_type().get_return_type().map(|t| get_descriptor_entry(t.as_any_type_enum()));
-    return FunctionDescriptor(params, return_ty);
+    return MethodDescriptor(params, return_ty);
 }
 
 fn get_descriptor_entry(v: AnyTypeEnum<'_>) -> DescriptorEntry {

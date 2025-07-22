@@ -2,7 +2,7 @@ use std::io::{Seek, Write};
 
 use zip::{result::ZipResult, ZipWriter};
 
-use crate::{classfile::LVTi, FunctionTranslationContext};
+use crate::{classfile::{descriptor::{DescriptorEntry, FieldDescriptor, MethodDescriptor}, LVTi}, FunctionTranslationContext};
 
 pub trait MemoryStrategy {
     type MemoryInstructionEmitter: MemoryInstructionEmitter;
@@ -63,10 +63,9 @@ impl MemorySegmentEmitter {
             let offset = ctx.get_next_slot();
             let vars = StackPointerLocalVariables {base, offset};
             ctx.memory_allocation_info.stack_pointer.replace(vars);
-            // TODO: load properly!
-            ctx.java_method.emit_constant_int(0);
+            ctx.java_method.emit_invokestatic(java_support_lib::MEMORYSEGMENTSTACK.name, "getBase", MethodDescriptor(vec![], Some(DescriptorEntry::Class("java/lang/ThreadLocal".to_owned()))));
             ctx.java_method.emit_store(crate::classfile::JavaType::Reference, base);
-            ctx.java_method.emit_constant_int(0);
+            ctx.java_method.emit_invokestatic(java_support_lib::MEMORYSEGMENTSTACK.name, "getOffset", MethodDescriptor(vec![], Some(DescriptorEntry::Int)));
             ctx.java_method.emit_store(crate::classfile::JavaType::Int, offset);
             return vars;
         }
@@ -76,6 +75,6 @@ impl MemorySegmentEmitter {
 impl MemoryInstructionEmitter for MemorySegmentEmitter {
     fn const_stack_alloc<W: Write>(ctx: &mut FunctionTranslationContext<'_,'_, W, Self>, size: u64) {
         let stack_pointer = Self::get_stack_pointer_local(ctx);
-        ctx.java_method.emit_iinc(stack_pointer.offset, size as i16);
+        ctx.java_method.emit_iinc(stack_pointer.offset, -(size as i16));
     }
 }

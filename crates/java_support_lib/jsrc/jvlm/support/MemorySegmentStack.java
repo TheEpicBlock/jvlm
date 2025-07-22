@@ -16,4 +16,11 @@ public final class MemorySegmentStack {
     });
     // Stack will grow downwards, so the pointer starts at `STACK_SIZE`
     public final static ThreadLocal<Integer> STACK_POINTER = ThreadLocal.withInitial(() -> STACK_SIZE);
+
+    public final static MemorySegment getBase() {
+        return STACK_BASE.get();
+    }
+    public final static int getOffset() {
+        return STACK_POINTER.get();
+    }
 }
