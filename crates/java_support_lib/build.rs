@@ -48,6 +48,8 @@ fn main() {
         fs::write(&java_out, rewritten_class).unwrap();
 
         Command::new("javac")
+            .arg("--enable-preview") // The host's javac might be slightly out of date
+            .arg("--release").arg("21") // The minimum javac version we require to build
             .arg(&java_out)
             .status().unwrap().exit_ok().unwrap();
 

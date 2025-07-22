@@ -2,7 +2,7 @@ use std::{collections::HashMap, io::{Seek, Write}};
 
 use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
 use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
-use memory::{MemoryStrategy, UnsafeMemorySegmentStrategy};
+use memory::{MemoryStrategy, MemorySegmentStrategy};
 use options::{FunctionNameMapper, JvlmCompileOptions};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
@@ -65,7 +65,7 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
 
     // Add any global support classes which are needed for memory management
     // TODO move into options
-    let memory_manager = UnsafeMemorySegmentStrategy;
+    let memory_manager = MemorySegmentStrategy;
     memory_manager.append_support_classes(&mut out).unwrap();
 
     out.finish().unwrap();
@@ -280,7 +280,7 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
     }
 }
 
-struct FunctionTranslationContext<'ctx, 'class_writer, W: Write, M: memory::MemoryInstructionEmitter = memory::UnsafeMemorySegmentEmitter> {
+struct FunctionTranslationContext<'ctx, 'class_writer, W: Write, M: memory::MemoryInstructionEmitter = memory::MemorySegmentEmitter> {
     params: HashMap<AnyValueEnum<'ctx>, u16>,
     /// Information about the ssa values of the llvm instructions.
     /// This basically means this has information about all the results of all the instructions
@@ -348,7 +348,7 @@ struct InstructionStatus {
 
 impl <W: Write> FunctionTranslationContext<'_, '_, W> {
     fn new<'ctx, 'class_writer>(params: Vec<BasicValueEnum<'ctx>>, method: MethodWriter<'class_writer, W>) -> FunctionTranslationContext<'ctx, 'class_writer, W> {
-        let strat = UnsafeMemorySegmentStrategy;
+        let strat = MemorySegmentStrategy;
 
         let next_slot = params.len() as LVTi;
         return FunctionTranslationContext {

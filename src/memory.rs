@@ -23,18 +23,20 @@ pub trait MemoryInstructionEmitter: Sized {
 
 }
 
-pub struct UnsafeMemorySegmentStrategy;
-impl MemoryStrategy for UnsafeMemorySegmentStrategy {
-    type MemoryInstructionEmitter = UnsafeMemorySegmentEmitter;
+/// Memory allocation strategy based on [java.lang.foreign.MemorySegment](https://docs.oracle.com/en/java/javase/22/docs/api/java.base/java/lang/foreign/package-summary.html),
+/// Which has been a preview api since java 19, and was stabilized in java 22.
+pub struct MemorySegmentStrategy;
+impl MemoryStrategy for MemorySegmentStrategy {
+    type MemoryInstructionEmitter = MemorySegmentEmitter;
 
     fn emitter_for_function(&self) -> Self::MemoryInstructionEmitter {
-        UnsafeMemorySegmentEmitter {
+        MemorySegmentEmitter {
             stack_pointer: None,
         }
     }
     
     fn append_support_classes(&self, output: &mut ZipWriter<impl Write+Seek>) -> ZipResult<()> {
-        java_support_lib::STACK.write_to_zip(output)?;
+        java_support_lib::MEMORYSEGMENTSTACK.write_to_zip(output)?;
         Ok(())
     }
 }
@@ -47,12 +49,12 @@ struct StackPointerLocalVariables {
     offset: LVTi,
 }
 
-pub struct UnsafeMemorySegmentEmitter {
+pub struct MemorySegmentEmitter {
     /// Local variables which stores the values for the stack pointer
     stack_pointer: Option<StackPointerLocalVariables>
 }
 
-impl UnsafeMemorySegmentEmitter {
+impl MemorySegmentEmitter {
     fn get_stack_pointer_local<W: Write>(ctx: &mut FunctionTranslationContext<'_,'_, W, Self>) -> StackPointerLocalVariables {
         if let Some(x) = ctx.memory_allocation_info.stack_pointer {
             return x;
@@ -71,7 +73,7 @@ impl UnsafeMemorySegmentEmitter {
     }
 }
 
-impl MemoryInstructionEmitter for UnsafeMemorySegmentEmitter {
+impl MemoryInstructionEmitter for MemorySegmentEmitter {
     fn const_stack_alloc<W: Write>(ctx: &mut FunctionTranslationContext<'_,'_, W, Self>, size: u64) {
         let stack_pointer = Self::get_stack_pointer_local(ctx);
         ctx.java_method.emit_iinc(stack_pointer.offset, size as i16);
