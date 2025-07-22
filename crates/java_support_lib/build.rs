@@ -1,6 +1,6 @@
 #![feature(exit_status_error)]
 
-use std::{env, ffi::OsStr, fs::{self, File}, hash::Hasher, io::{self, BufReader, BufWriter, Write}, path::PathBuf, process::Command};
+use std::{env, fs::{self, File}, io::{self, BufReader, BufWriter, Write}, path::PathBuf, process::Command};
 
 use num::{BigUint, ToPrimitive};
 use sha2::Digest;

@@ -1,4 +1,4 @@
-use std::{io::{Read, Seek, Write}, iter::Zip};
+use std::io::{Read, Seek, Write};
 
 use zip::{result::ZipError, ZipArchive, ZipWriter};
 

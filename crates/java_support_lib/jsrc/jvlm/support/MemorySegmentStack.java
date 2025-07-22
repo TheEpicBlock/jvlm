@@ -3,6 +3,7 @@ package jvlm.support;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 
+@SuppressWarnings("preview") // It's no longer preview from java 22, but if we're compiling with an older javac it might give warnings
 public final class MemorySegmentStack {
     // 8 KiB is a pretty average max stack size, it should be enough.
     public final static int STACK_SIZE = 1024*8;
