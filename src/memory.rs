@@ -1,4 +1,6 @@
-use std::io::Write;
+use std::io::{Seek, Write};
+
+use zip::{result::ZipResult, ZipWriter};
 
 use crate::{classfile::LVTi, FunctionTranslationContext};
 
@@ -8,6 +10,9 @@ pub trait MemoryStrategy {
     /// Creates a new emitter. An emitter can only be used for a single function.
     /// Trying to use an emitter for multiple functions will lead to wrong code.
     fn emitter_for_function(&self) -> Self::MemoryInstructionEmitter;
+
+    /// Write any support classes that this memory strategy needs into the zip file
+    fn append_support_classes(&self, output: &mut ZipWriter<impl Write+Seek>) -> ZipResult<()>;
 }
 
 /// Allows emitting memory-related java bytecode. An emitter is created using a [`MemoryStrategy`] and is bound to a specific function
@@ -23,7 +28,14 @@ impl MemoryStrategy for UnsafeMemorySegmentStrategy {
     type MemoryInstructionEmitter = UnsafeMemorySegmentEmitter;
 
     fn emitter_for_function(&self) -> Self::MemoryInstructionEmitter {
-        todo!()
+        UnsafeMemorySegmentEmitter {
+            stack_pointer: None,
+        }
+    }
+    
+    fn append_support_classes(&self, output: &mut ZipWriter<impl Write+Seek>) -> ZipResult<()> {
+        java_support_lib::STACK.write_to_zip(output)?;
+        Ok(())
     }
 }
 

@@ -62,6 +62,12 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
         }
         out = class_output.finalize();
     }
+
+    // Add any global support classes which are needed for memory management
+    // TODO move into options
+    let memory_manager = UnsafeMemorySegmentStrategy;
+    memory_manager.append_support_classes(&mut out).unwrap();
+
     out.finish().unwrap();
 }
 

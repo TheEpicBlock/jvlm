@@ -20,3 +20,4 @@ indexmap = "2.9.0"
 llvm-sys = { version = "*" }
 inkwell = { git = "https://github.com/stevefan1999-personal/inkwell.git", features = ["llvm20-1"], default-features = false}
 zip = "4.2.0"
+java_support_lib = { path = "crates/java_support_lib" }
