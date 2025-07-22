@@ -3,7 +3,7 @@ use std::{collections::HashMap, io::{Seek, Write}};
 use classfile::{descriptor::{DescriptorEntry, FunctionDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, MethodMetadata, MethodWriter};
 use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
 use options::{FunctionNameMapper, JvlmCompileOptions};
-use zip::{write::SimpleFileOptions, ZipWriter};
+use zip::{write::SimpleFileOptions, DateTime, ZipWriter};
 
 mod classfile;
 pub mod options;
@@ -25,7 +25,7 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
     }
 
     for (class, methods) in methods_per_class {
-        out.start_file(format!("{class}.class"), SimpleFileOptions::default()).unwrap();
+        out.start_file(format!("{class}.class"), SimpleFileOptions::default().last_modified_time(DateTime::default())).unwrap();
 
         let class_meta = ClassMetadata {
             is_public: true,
