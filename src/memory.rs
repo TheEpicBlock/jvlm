@@ -1,8 +1,9 @@
 use std::io::{Seek, Write};
 
+use inkwell::types::AnyTypeEnum;
 use zip::{result::ZipResult, ZipWriter};
 
-use crate::{classfile::{descriptor::{DescriptorEntry, FieldDescriptor, MethodDescriptor}, LVTi}, FunctionTranslationContext};
+use crate::{classfile::{descriptor::{DescriptorEntry, FieldDescriptor, MethodDescriptor}, JavaType, LVTi}, get_java_type, FunctionTranslationContext};
 
 pub trait MemoryStrategy {
     type MemoryInstructionEmitter: MemoryInstructionEmitter;
@@ -20,7 +21,7 @@ pub trait MemoryInstructionEmitter: Sized {
     /// Do a stack allocation with a constant size. Which is equivalent to calling `alloca` in llvm. The instructions emitted should
     /// create a pointer to the newly allocated region.
     fn const_stack_alloc<W: Write>(ctx: &mut FunctionTranslationContext<'_,'_, W, Self>, size: u64);
-
+    fn load<'ctx, W: Write>(ctx: &mut FunctionTranslationContext<'ctx,'_, W, Self>, ty: AnyTypeEnum<'ctx>);
 }
 
 /// Memory allocation strategy based on [java.lang.foreign.MemorySegment](https://docs.oracle.com/en/java/javase/22/docs/api/java.base/java/lang/foreign/package-summary.html),
@@ -76,5 +77,27 @@ impl MemoryInstructionEmitter for MemorySegmentEmitter {
     fn const_stack_alloc<W: Write>(ctx: &mut FunctionTranslationContext<'_,'_, W, Self>, size: u64) {
         let stack_pointer = Self::get_stack_pointer_local(ctx);
         ctx.java_method.emit_iinc(stack_pointer.offset, -(size as i16));
+        
+        ctx.java_method.emit_load(crate::classfile::JavaType::Reference, stack_pointer.base);
+        ctx.java_method.emit_load(crate::classfile::JavaType::Int, stack_pointer.offset);
+        ctx.java_method.emit_invokevirtual("java/lang/foreign/MemorySegment", "asSlice", MethodDescriptor(vec![DescriptorEntry::Long], Some(DescriptorEntry::Class("java/lang/foreign/MemorySegment".to_owned()))));
+    }
+
+    fn load<'ctx, W: Write>(ctx: &mut FunctionTranslationContext<'ctx,'_, W, Self>, ty: AnyTypeEnum<'ctx>) {
+        let size = ctx.target_data.get_abi_size(&ty);
+        let target_type = get_java_type(ty);
+        let value_layout = match (size, target_type) {
+            (0..=8, _) => ("java/lang/foreign/ValueLayout$OfByte", DescriptorEntry::Byte, "JAVA_BYTE"),
+            (9..=16, _) => ("java/lang/foreign/ValueLayout$OfShort", DescriptorEntry::Short, "JAVA_SHORT"),
+            (17..=32, JavaType::Float) => ("java/lang/foreign/ValueLayout$OfFloat", DescriptorEntry::Float, "JAVA_FLOAT"),
+            (17..=32, _) => ("java/lang/foreign/ValueLayout$OfInt", DescriptorEntry::Int, "JAVA_INT"),
+            (33..=64, JavaType::Double) => ("java/lang/foreign/ValueLayout$OfDouble", DescriptorEntry::Double, "JAVA_DOUBLE"),
+            (33..=64, _) => ("java/lang/foreign/ValueLayout$OfLong", DescriptorEntry::Long, "JAVA_LONG"),
+            _ => todo!()
+        };
+        ctx.java_method.emit_getstatic("java/lang/foreign/ValueLayout", value_layout.2, FieldDescriptor::Class(value_layout.0.to_owned()));
+        ctx.java_method.emit_constant_int(0);
+        ctx.java_method.emit_invokevirtual("java/lang/foreign/MemorySegment", "get", MethodDescriptor(vec![DescriptorEntry::Class(value_layout.0.to_owned()), DescriptorEntry::Long], Some(value_layout.1)));
+        // TODO convert to target type
     }
 }

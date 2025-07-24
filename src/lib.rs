@@ -4,8 +4,9 @@
 use std::{collections::HashMap, io::{Seek, Write}};
 
 use classfile::{descriptor::{DescriptorEntry, MethodDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
-use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
-use memory::{MemoryStrategy, MemorySegmentStrategy};
+use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
+use llvm_sys::{core::LLVMGetTarget, target::LLVMGetModuleDataLayout};
+use memory::{MemoryInstructionEmitter, MemorySegmentStrategy, MemoryStrategy};
 use options::{FunctionNameMapper, JvlmCompileOptions};
 use zip::{write::SimpleFileOptions, ZipWriter};
 
@@ -29,6 +30,9 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
             .push((location.name, f));
     }
 
+    // SAFETY: result should not be dropped
+    let target_data = unsafe { TargetData::new(LLVMGetModuleDataLayout(llvm_ir.as_mut_ptr())) };
+    
     for (class, methods) in methods_per_class {
         out.start_file(format!("{class}.class"), SimpleFileOptions::default()).unwrap();
 
@@ -61,10 +65,11 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
                 descriptor: get_descriptor(&method),
             };
             let method_output = class_output.write_method(method_metadata);
-            translate_method(method, method_output)
+            translate_method(method, &target_data, method_output)
         }
         out = class_output.finalize();
     }
+    std::mem::forget(target_data);
 
     // Add any global support classes which are needed for memory management
     // TODO move into options
@@ -74,8 +79,8 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
     out.finish().unwrap();
 }
 
-fn translate_method<W: Write>(f: FunctionValue<'_>, method_writer: MethodWriter<'_, W>) {
-    let mut translator = FunctionTranslationContext::new(f.get_params(), method_writer);
+fn translate_method<W: Write>(f: FunctionValue<'_>, target_data: &TargetData, method_writer: MethodWriter<'_, W>) {
+    let mut translator = FunctionTranslationContext::new(f.get_params(), target_data, method_writer);
     for block in f.get_basic_blocks() {
         translator.record_start_of_basic_block(&block);
         for instr in block.get_instructions() {
@@ -118,6 +123,7 @@ fn get_descriptor_entry(v: AnyTypeEnum<'_>) -> DescriptorEntry {
 /// Allocates a slot in java's local variable table for an llvm value and emits java bytecode to store the value there.
 /// If the value is of type void, only the computation is done and no slot is allocated.
 fn translate_and_store<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx, 'class_writer, W>) {
+    dbg!(&v);
     translate(v, e);
     
     let ty = v.get_type();
@@ -137,14 +143,19 @@ fn translate<'ctx, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationC
             } else if int_value.is_const() {
                 e.java_method.emit_constant_int(int_value.get_sign_extended_constant().unwrap() as i32);
             } else {
-                dbg!(int_value);
-                todo!()
+                todo!("can't handle {int_value}")
             }
         },
         AnyValueEnum::FloatValue(float_value) => todo!(),
         AnyValueEnum::PhiValue(phi_value) => todo!(),
         AnyValueEnum::FunctionValue(function_value) => todo!(),
-        AnyValueEnum::PointerValue(pointer_value) => todo!(),
+        AnyValueEnum::PointerValue(pointer_value) => {
+            if let Some(instr) = pointer_value.as_instruction() {
+                translate_instruction(instr, e);
+            } else {
+                todo!("can't handle {pointer_value}")
+            }
+        },
         AnyValueEnum::StructValue(struct_value) => todo!(),
         AnyValueEnum::VectorValue(vector_value) => todo!(),
         AnyValueEnum::ScalableVectorValue(scalable_vector_value) => todo!(),
@@ -183,16 +194,20 @@ fn load<'ctx, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContex
 
 /// Compute the type with which a node is stored/retrieved in the java local variable table
 fn get_java_type(v: AnyTypeEnum<'_>) -> JavaType {
+    get_java_type_or_none(v).unwrap()
+}
+/// Compute the type with which a node is stored/retrieved in the java local variable table
+fn get_java_type_or_none(v: AnyTypeEnum<'_>) -> Option<JavaType> {
     match v {
-        AnyTypeEnum::ArrayType(_) => JavaType::Reference,
-        AnyTypeEnum::FloatType(_) => JavaType::Float,
+        AnyTypeEnum::ArrayType(_) => Some(JavaType::Reference),
+        AnyTypeEnum::FloatType(_) => Some(JavaType::Float),
         AnyTypeEnum::FunctionType(_) => todo!(),
-        AnyTypeEnum::IntType(_) => JavaType::Int,
-        AnyTypeEnum::PointerType(_) => JavaType::Reference,
-        AnyTypeEnum::StructType(_) => JavaType::Reference,
+        AnyTypeEnum::IntType(_) => Some(JavaType::Int),
+        AnyTypeEnum::PointerType(_) => Some(JavaType::Reference),
+        AnyTypeEnum::StructType(_) => Some(JavaType::Reference),
         AnyTypeEnum::VectorType(_) => todo!(),
         AnyTypeEnum::ScalableVectorType(_) => todo!(),
-        AnyTypeEnum::VoidType(_) => todo!(),
+        AnyTypeEnum::VoidType(_) => None,
     }
 }
 
@@ -209,7 +224,7 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
         },
         InstructionOpcode::Return => {
             v.get_operands().for_each(|o| load_operand(o, e));
-            e.java_method.emit_return(Some(JavaType::Int)); // TODO
+            e.java_method.emit_return(get_java_type_or_none(v.get_type())); // TODO
         },
         InstructionOpcode::Br => {
             if v.get_num_operands() == 1 {
@@ -279,11 +294,34 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
             e.java_method.record_stackframe(op2, pre_operand_stackmap);
             e.java_method.record_stackframe(after_select, post_operand_stackmap);
         }
-        _ => todo!("{:?}", v)
+        InstructionOpcode::Alloca => {
+            let size = e.target_data.get_abi_size(&v.get_type());
+            let num_elements = v.get_operand(0);
+            let num_elements = num_elements.map(|n| n.expect_left("Alloca does not accept basic blocks").into_int_value());
+            if num_elements.is_none() || num_elements.is_some_and(|n| n.is_constant_int()) {
+                let num_elements = num_elements.map(|n| n.get_zero_extended_constant().unwrap()).unwrap_or(1);
+                memory::MemorySegmentEmitter::const_stack_alloc(e, size*num_elements);
+            } else {
+                todo!("Dynamic alloca size not supported yet");
+            }
+        }
+        InstructionOpcode::Store => {
+            // TODO
+        }
+        InstructionOpcode::Load => {
+            // load pointer
+            load_operand(v.get_operand(0), e);
+            memory::MemorySegmentEmitter::load(e, v.get_type());
+        }
+        InstructionOpcode::Call => {
+            // TODO
+        }
+        _ => todo!("{v:#?}")
     }
 }
 
 struct FunctionTranslationContext<'ctx, 'class_writer, W: Write, M: memory::MemoryInstructionEmitter = memory::MemorySegmentEmitter> {
+    target_data: &'class_writer TargetData,
     params: HashMap<AnyValueEnum<'ctx>, u16>,
     /// Information about the ssa values of the llvm instructions.
     /// This basically means this has information about all the results of all the instructions
@@ -350,11 +388,12 @@ struct InstructionStatus {
 }
 
 impl <W: Write> FunctionTranslationContext<'_, '_, W> {
-    fn new<'ctx, 'class_writer>(params: Vec<BasicValueEnum<'ctx>>, method: MethodWriter<'class_writer, W>) -> FunctionTranslationContext<'ctx, 'class_writer, W> {
+    fn new<'ctx, 'class_writer>(params: Vec<BasicValueEnum<'ctx>>, target_data: &'class_writer TargetData, method: MethodWriter<'class_writer, W>) -> FunctionTranslationContext<'ctx, 'class_writer, W> {
         let strat = MemorySegmentStrategy;
 
         let next_slot = params.len() as LVTi;
         return FunctionTranslationContext {
+            target_data,
             params: params.into_iter().enumerate().map(|(a,b)| (b.as_any_value_enum(),a as u16)).collect(),
             ssa_values: HashMap::new(),
             java_method: method,

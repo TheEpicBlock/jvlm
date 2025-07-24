@@ -24,17 +24,17 @@ impl ConstantPool {
         self.entries.insert_full(ConstantPoolEntry::NameAndType { name, descriptor }).0 as ConstantPoolReference + 1
     }
     pub fn fieldref(&mut self, class: String, name: String, descriptor: String) -> ConstantPoolReference {
-        let class = self.utf8(class);
+        let class = self.class(class);
         let name_and_type = self.name_and_type(name, descriptor);
         self.entries.insert_full(ConstantPoolEntry::FieldRef { class, name_and_type }).0 as ConstantPoolReference + 1
     }
     pub fn methodref(&mut self, class: String, name: String, descriptor: String) -> ConstantPoolReference {
-        let class = self.utf8(class);
+        let class = self.class(class);
         let name_and_type = self.name_and_type(name, descriptor);
         self.entries.insert_full(ConstantPoolEntry::MethodRef { class, name_and_type }).0 as ConstantPoolReference + 1
     }
     pub fn interfacemethodref(&mut self, class: String, name: String, descriptor: String) -> ConstantPoolReference {
-        let class = self.utf8(class);
+        let class = self.class(class);
         let name_and_type = self.name_and_type(name, descriptor);
         self.entries.insert_full(ConstantPoolEntry::InterfaceMethodRef { class, name_and_type }).0 as ConstantPoolReference + 1
     }

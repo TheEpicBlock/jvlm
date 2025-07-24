@@ -3,6 +3,7 @@ use bytebuffer::ByteBuffer;
 use byteorder::WriteBytesExt;
 use constant_pool::{ConstantPool, ConstantPoolReference};
 use descriptor::{DescriptorEntry, FieldDescriptor, MethodDescriptor};
+use inkwell::targets::TargetData;
 
 mod constant_pool;
 pub(crate) mod descriptor;
@@ -205,11 +206,10 @@ impl <W> MethodWriter<'_, W> where W: Write {
     pub fn emit_store(&mut self, ty: JavaType, index: u16) {
         match ty {
             JavaType::Int => self.emit_load_store_inner(0x3b, 0x36, index),
-            // JavaType::Long => self.emit_load_inner(0x1e, 0x16, index),
-            // JavaType::Float => self.emit_load_inner(0x22, 0x17, index),
-            // JavaType::Double => self.emit_load_inner(0x26, 0x18, index),
-            // JavaType::Reference => self.emit_load_inner(0x2a, 0x19, index),
-            _ => todo!()
+            JavaType::Long => self.emit_load_store_inner(0x3f, 0x37, index),
+            JavaType::Float => self.emit_load_store_inner(0x43, 0x38, index),
+            JavaType::Double => self.emit_load_store_inner(0x47, 0x39, index),
+            JavaType::Reference => self.emit_load_store_inner(0x4b, 0x40, index),
         }
         self.record_pop();
     }
@@ -358,6 +358,18 @@ impl <W> MethodWriter<'_, W> where W: Write {
 
         let method_ref = self.class_writer.constant_pool.methodref(class.as_ref().to_owned(), name.as_ref().to_owned(), desc.to_string());
         self.code().write_u8(0xB8); // invokestatic
+        self.code().write_u16(method_ref);
+    }
+
+    pub fn emit_invokevirtual(&mut self, class: impl AsRef<str>, name: impl AsRef<str>, desc: MethodDescriptor) {
+        self.record_pop(); // "this"
+        desc.0.iter().for_each(|_| { self.record_pop(); });
+        if let Some(return_type) = &desc.1 {
+            self.record_push_ty(return_type.into());
+        }
+
+        let method_ref = self.class_writer.constant_pool.methodref(class.as_ref().to_owned(), name.as_ref().to_owned(), desc.to_string());
+        self.code().write_u8(0xb6); // invokestatic
         self.code().write_u16(method_ref);
     }
 
@@ -588,6 +600,7 @@ pub enum Visibility {
 }
 
 /// Represents a type inside of the java stack or the java local variable table
+#[derive(Debug, Clone, Copy)]
 pub enum JavaType {
     Int,
     Long,
