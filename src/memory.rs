@@ -84,7 +84,7 @@ impl MemoryInstructionEmitter for MemorySegmentEmitter {
     }
 
     fn load<'ctx, W: Write>(ctx: &mut FunctionTranslationContext<'ctx,'_, W, Self>, ty: AnyTypeEnum<'ctx>) {
-        let size = ctx.target_data.get_abi_size(&ty);
+        let size = ctx.g.target_data.get_abi_size(&ty);
         let target_type = get_java_type(ty);
         let value_layout = match (size, target_type) {
             (0..=8, _) => ("java/lang/foreign/ValueLayout$OfByte", DescriptorEntry::Byte, "JAVA_BYTE"),
