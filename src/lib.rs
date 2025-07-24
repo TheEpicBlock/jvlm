@@ -126,7 +126,6 @@ fn get_descriptor_entry(v: AnyTypeEnum<'_>) -> DescriptorEntry {
 /// Allocates a slot in java's local variable table for an llvm value and emits java bytecode to store the value there.
 /// If the value is of type void, only the computation is done and no slot is allocated.
 fn translate_and_store<'ctx, 'class_writer, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationContext<'ctx, 'class_writer, W>) {
-    dbg!(&v);
     translate(v, e);
     
     let ty = v.get_type();
@@ -291,6 +290,7 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
             let post_operand_stackmap = e.java_method.get_current_stackframe();
             // This is after we compute operand two, this is where the goto should land
 
+            let return_type = v.get_operand(0).and_then(|op| get_java_type_or_none(op.unwrap_left().get_type().as_any_type_enum())); 
             // Set the targets
             let after_select = e.java_method.current_location();
             e.java_method.set_target(if_target, op2);
@@ -318,9 +318,12 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
             memory::MemorySegmentEmitter::load(e, v.get_type());
         }
         InstructionOpcode::Call => {
-            let func = v.get_operand(0).unwrap().unwrap_left();
+            // For some reason the function pointer is the last argument
+            let func = v.get_operand(v.get_num_operands() - 1).unwrap().unwrap_left();
             let f = func.into_pointer_value().as_any_value_enum().into_function_value();
             let loc = e.g.name_mapper.get_java_location(f.get_name().to_str().unwrap());
+
+            v.get_operands().take((v.get_num_operands()-1) as usize).for_each(|o| load_operand(o, e));
             e.java_method.emit_invokestatic(loc.class, loc.name, get_descriptor(&f));
         }
         _ => todo!("{v:#?}")
