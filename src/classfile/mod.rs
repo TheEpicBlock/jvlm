@@ -394,8 +394,25 @@ impl <W> MethodWriter<'_, W> where W: Write {
         }
 
         let method_ref = self.class_writer.constant_pool.methodref(class.as_ref().to_owned(), name.as_ref().to_owned(), desc.to_string());
-        self.code().write_u8(0xb6); // invokestatic
+        self.code().write_u8(0xb6); // invokevirtual
         self.code().write_u16(method_ref);
+    }
+
+    pub fn emit_invokeinterface(&mut self, class: impl AsRef<str>, name: impl AsRef<str>, desc: MethodDescriptor) {
+        let stack_s = self.current_frame.stack.len();
+        self.record_pop(); // "this"
+        desc.0.iter().for_each(|_| { self.record_pop(); });
+        let arg_count = (stack_s - self.current_frame.stack.len()) as u8;
+        if let Some(return_type) = &desc.1 {
+            self.record_push_ty(return_type.into());
+        }
+
+        let method_ref = self.class_writer.constant_pool.interfacemethodref(class.as_ref().to_owned(), name.as_ref().to_owned(), desc.to_string());
+        self.code().write_u8(0xb9); // invokeinterface
+        self.code().write_u16(method_ref);
+
+        self.code().write_u8(arg_count);
+        self.code().write_u8(0);
     }
 
     pub fn set_target(&mut self, target_index: InstructionTarget, target: CodeLocation) {

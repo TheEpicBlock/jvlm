@@ -64,7 +64,7 @@ impl MemorySegmentEmitter {
             let offset = ctx.get_next_slot();
             let vars = StackPointerLocalVariables {base, offset};
             ctx.memory_allocation_info.stack_pointer.replace(vars);
-            ctx.java_method.emit_invokestatic(java_support_lib::MEMORYSEGMENTSTACK.name, "getBase", MethodDescriptor(vec![], Some(DescriptorEntry::Class("java/lang/ThreadLocal".to_owned()))));
+            ctx.java_method.emit_invokestatic(java_support_lib::MEMORYSEGMENTSTACK.name, "getBase", MethodDescriptor(vec![], Some(DescriptorEntry::Class("java/lang/foreign/MemorySegment".to_owned()))));
             ctx.java_method.emit_store(crate::classfile::JavaType::Reference, base);
             ctx.java_method.emit_invokestatic(java_support_lib::MEMORYSEGMENTSTACK.name, "getOffset", MethodDescriptor(vec![], Some(DescriptorEntry::Int)));
             ctx.java_method.emit_store(crate::classfile::JavaType::Int, offset);
@@ -81,7 +81,7 @@ impl MemoryInstructionEmitter for MemorySegmentEmitter {
         ctx.java_method.emit_load(crate::classfile::JavaType::Reference, stack_pointer.base);
         ctx.java_method.emit_load(crate::classfile::JavaType::Int, stack_pointer.offset);
         ctx.java_method.emit_i2l();
-        ctx.java_method.emit_invokevirtual("java/lang/foreign/MemorySegment", "asSlice", MethodDescriptor(vec![DescriptorEntry::Long], Some(DescriptorEntry::Class("java/lang/foreign/MemorySegment".to_owned()))));
+        ctx.java_method.emit_invokeinterface("java/lang/foreign/MemorySegment", "asSlice", MethodDescriptor(vec![DescriptorEntry::Long], Some(DescriptorEntry::Class("java/lang/foreign/MemorySegment".to_owned()))));
     }
 
     fn load<'ctx, W: Write>(ctx: &mut FunctionTranslationContext<'ctx,'_, W, Self>, ty: AnyTypeEnum<'ctx>) {
@@ -98,7 +98,7 @@ impl MemoryInstructionEmitter for MemorySegmentEmitter {
         };
         ctx.java_method.emit_getstatic("java/lang/foreign/ValueLayout", value_layout.2, FieldDescriptor::Class(value_layout.0.to_owned()));
         ctx.java_method.emit_constant_long(0);
-        ctx.java_method.emit_invokevirtual("java/lang/foreign/MemorySegment", "get", MethodDescriptor(vec![DescriptorEntry::Class(value_layout.0.to_owned()), DescriptorEntry::Long], Some(value_layout.1)));
+        ctx.java_method.emit_invokeinterface("java/lang/foreign/MemorySegment", "get", MethodDescriptor(vec![DescriptorEntry::Class(value_layout.0.to_owned()), DescriptorEntry::Long], Some(value_layout.1)));
         // TODO convert to target type
     }
 }
