@@ -427,6 +427,7 @@ def main():
 						result = r(j)
 						if result is not None:
 							failures.append(TestFailure(tst[0].name, tst[1], result))
+							anyfail = True
 					if not anyfail:
 						print(f"{tst[0].name}/{tst[1]}: Success on {len(test_runners)} tests")
 			if len(failures) == 1:
