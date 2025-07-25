@@ -4,9 +4,9 @@
 use std::{collections::HashMap, io::{Seek, Write}, mem::ManuallyDrop};
 
 use classfile::{descriptor::{DescriptorEntry, MethodDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
-use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
+use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
 use llvm_intrinsics::get_instrinsic_handler;
-use llvm_sys::{core::LLVMGetTarget, target::LLVMGetModuleDataLayout};
+use llvm_sys::target::LLVMGetModuleDataLayout;
 use memory::{MemoryInstructionEmitter, MemorySegmentStrategy, MemoryStrategy};
 use options::{FunctionNameMapper, JvlmCompileOptions};
 use zip::{write::SimpleFileOptions, DateTime, ZipWriter};
