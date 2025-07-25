@@ -12,6 +12,7 @@ pub trait FunctionNameMapper {
     fn get_java_location(&self, c_name: &str) -> JavaFunctionLocation;
 }
 
+#[derive(Debug)]
 pub struct JavaFunctionLocation {
     pub class: String,
     pub name: String,

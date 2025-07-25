@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use super::JavaType;
+
 pub enum DescriptorEntry {
     Byte,
     Char,
@@ -13,7 +15,8 @@ pub enum DescriptorEntry {
     Array(Box<DescriptorEntry>),
 }
 
-pub struct FunctionDescriptor(pub Vec<DescriptorEntry>, pub Option<DescriptorEntry>);
+pub type FieldDescriptor = DescriptorEntry;
+pub struct MethodDescriptor(pub Vec<DescriptorEntry>, pub Option<DescriptorEntry>);
 
 impl Display for DescriptorEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -33,7 +36,7 @@ impl Display for DescriptorEntry {
     }
 }
 
-impl Display for FunctionDescriptor {
+impl Display for MethodDescriptor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "(")?;
         for param in &self.0 {
@@ -45,5 +48,17 @@ impl Display for FunctionDescriptor {
             None => write!(f, "V")?,
         }
         Ok(())
+    }
+}
+
+impl From<JavaType> for DescriptorEntry {
+    fn from(value: JavaType) -> Self {
+        match value {
+            JavaType::Int => Self::Int,
+            JavaType::Long => Self::Long,
+            JavaType::Float => Self::Float,
+            JavaType::Double => Self::Double,
+            JavaType::Reference => todo!(),
+        }
     }
 }

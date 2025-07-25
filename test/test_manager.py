@@ -275,7 +275,7 @@ def parse_test_declaration(declaration: str) -> list[Callable[[Path], Failure | 
 				timeout = float(expect.removesuffix("seconds").strip())
 				def run_test(p: Path) -> Failure | None:
 					try:
-						_ = subprocess.run([JSHELL, "-c", p, "-"], capture_output=True, input=f"System.out.println({run_str})".encode(), timeout=timeout)
+						_ = subprocess.run([JSHELL, "--enable-preview", "-c", p, "-"], capture_output=True, input=f"System.out.println({run_str})".encode(), timeout=timeout)
 						return NoTimeoutFailure(timeout)
 					except subprocess.TimeoutExpired:
 						return None
@@ -427,6 +427,7 @@ def main():
 						result = r(j)
 						if result is not None:
 							failures.append(TestFailure(tst[0].name, tst[1], result))
+							anyfail = True
 					if not anyfail:
 						print(f"{tst[0].name}/{tst[1]}: Success on {len(test_runners)} tests")
 			if len(failures) == 1:

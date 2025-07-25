@@ -1,0 +1,12 @@
+<!-- This pom isn't actually used!! -->
+<!-- It just allows editors to more easily understand out project structure-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>nl.theepicblock.jvlm</groupId>
+    <artifactId>jvlm_support</artifactId>
+    <version>0.0.0</version>
+    <build>
+        <sourceDirectory>${project.basedir}/jsrc</sourceDirectory>
+    </build>
+</project>

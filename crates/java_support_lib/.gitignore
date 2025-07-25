@@ -1,0 +1,2 @@
+# In case someone accidentally does invoke maven
+/target

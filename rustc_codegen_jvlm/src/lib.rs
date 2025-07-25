@@ -1,5 +1,9 @@
 #![feature(rustc_private)]
 #![allow(mutable_transmutes)]
+#![allow(internal_features)]
+
+#![allow(unused_variables)]
+
 ////////
 #![feature(assert_matches)]
 #![feature(exact_size_is_empty)]
@@ -20,18 +24,13 @@ extern crate rustc_driver;
 
 use std::any::Any;
 use std::fs::File;
-use std::io::{self, Write};
-use std::path::PathBuf;
-use std::ptr::NonNull;
-use std::rc::Rc;
+use std::io::{self};
 use std::path::Path;
 
 use codegen_llvm::LlvmCodegenBackend;
 use jvlm::linker;
-use rustc_codegen_ssa::back::link::link_binary;
-use rustc_codegen_ssa::base::codegen_crate;
 use rustc_codegen_ssa::traits::{CodegenBackend, ExtraBackendMethods, WriteBackendMethods};
-use rustc_codegen_ssa::{CodegenResults, CompiledModule, CrateInfo, ModuleKind, TargetConfig};
+use rustc_codegen_ssa::{CodegenResults, TargetConfig};
 use rustc_data_structures::fx::FxIndexMap;
 use jvlm::options::JvlmCompileOptions;
 use rustc_metadata::EncodedMetadata;
@@ -328,7 +327,7 @@ pub(crate) fn write_output_file<'ll>(
     verify_llvm_ir: bool,
 ) -> Result<(), rustc_span::fatal_error::FatalError> {
     let r: io::Result<_> = try {
-        let mut output = File::create(output)?;
+        let output = File::create(output)?;
         let llvm_mod = unsafe {jvlm::LlvmModule::new(std::mem::transmute(m))};
         jvlm::compile(llvm_mod, output, JvlmCompileOptions::default());
     };

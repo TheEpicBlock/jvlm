@@ -1,11 +1,16 @@
-use std::{collections::BTreeMap, io::{self, Write}};
+use std::{collections::BTreeMap, io::{self, Write}, ops::{Deref, DerefMut}};
 use bytebuffer::ByteBuffer;
 use byteorder::WriteBytesExt;
 use constant_pool::{ConstantPool, ConstantPoolReference};
-use descriptor::{DescriptorEntry, FunctionDescriptor};
+use descriptor::{DescriptorEntry, FieldDescriptor, MethodDescriptor};
+
+use crate::java_types::{JInt, JLong};
 
 mod constant_pool;
 pub(crate) mod descriptor;
+
+/// Index into the local variable table
+pub type LVTi = u16;
 
 pub struct ClassFileWriter<W: Write> {
     output: Option<W>,
@@ -202,16 +207,15 @@ impl <W> MethodWriter<'_, W> where W: Write {
     pub fn emit_store(&mut self, ty: JavaType, index: u16) {
         match ty {
             JavaType::Int => self.emit_load_store_inner(0x3b, 0x36, index),
-            // JavaType::Long => self.emit_load_inner(0x1e, 0x16, index),
-            // JavaType::Float => self.emit_load_inner(0x22, 0x17, index),
-            // JavaType::Double => self.emit_load_inner(0x26, 0x18, index),
-            // JavaType::Reference => self.emit_load_inner(0x2a, 0x19, index),
-            _ => todo!()
+            JavaType::Long => self.emit_load_store_inner(0x3f, 0x37, index),
+            JavaType::Float => self.emit_load_store_inner(0x43, 0x38, index),
+            JavaType::Double => self.emit_load_store_inner(0x47, 0x39, index),
+            JavaType::Reference => self.emit_load_store_inner(0x4b, 0x40, index),
         }
         self.record_pop();
     }
 
-    pub fn emit_constant_int(&mut self, integer: i32) {
+    pub fn emit_constant_int(&mut self, integer: JInt) {
         let r = self.class_writer.constant_pool.int(integer);
         if let Some(r) = u8::try_from(r).ok() {
             self.code().write_u8(0x12); //LDC
@@ -221,6 +225,30 @@ impl <W> MethodWriter<'_, W> where W: Write {
             self.code().write_u16(r);
         }
         self.record_push(VerificationType::Integer);
+    }
+
+    pub fn emit_constant_long(&mut self, long: JLong) {
+        if let Some(i) = JInt::try_from(long).ok() {
+            self.emit_constant_int(i);
+            self.emit_i2l();
+        } else {
+            todo!()
+        }
+        // let r = self.class_writer.constant_pool.int(long);
+        // if let Some(r) = u8::try_from(r).ok() {
+        //     self.code().write_u8(0x12); //LDC
+        //     self.code().write_u8(r);
+        // } else {
+        //     self.code().write_u8(0x13); //LDC_w
+        //     self.code().write_u16(r);
+        // }
+        // self.record_push(VerificationType::Integer);
+    }
+
+    pub fn emit_i2l(&mut self) {
+        self.record_pop();
+        self.record_push(VerificationType::Long);
+        self.code().write_u8(0x85);
     }
 
     pub fn emit_return(&mut self, ty: Option<JavaType>) {
@@ -236,6 +264,22 @@ impl <W> MethodWriter<'_, W> where W: Write {
                 JavaType::Reference => self.code().write_u8(0xb0),
             },
             None => self.code().write_u8(0xb1), // Void return
+        }
+    }
+
+    pub fn emit_iinc(&mut self, local_variable: LVTi, constant: i16) {
+        if let Some(local_variable) = u8::try_from(local_variable).ok() && 
+                let Some(constant) = i8::try_from(constant).ok() {
+            // Both variables fit in a single byte, write the normal version of IINC
+            self.code().write_u8(0x84); // IINC
+            self.code().write_u8(local_variable);
+            self.code().write_i8(constant);
+        } else {
+            // One of the two is too big, use a WIDE
+            self.code().write_u8(0xC4); // WIDE
+            self.code().write_u8(0x84); // IINC
+            self.code().write_u16(local_variable);
+            self.code().write_i16(constant);
         }
     }
 
@@ -324,6 +368,53 @@ impl <W> MethodWriter<'_, W> where W: Write {
         };
     }
 
+    pub fn emit_getstatic(&mut self, class: impl AsRef<str>, field: impl AsRef<str>, ty: FieldDescriptor) {
+        let field_ref = self.class_writer.constant_pool.fieldref(class.as_ref().to_owned(), field.as_ref().to_owned(), ty.to_string());
+        self.code().write_u8(0xB2); // getstatic
+        self.code().write_u16(field_ref);
+        self.record_push_ty((&ty).into());
+    }
+
+    pub fn emit_invokestatic(&mut self, class: impl AsRef<str>, name: impl AsRef<str>, desc: MethodDescriptor) {
+        desc.0.iter().for_each(|_| { self.record_pop(); });
+        if let Some(return_type) = &desc.1 {
+            self.record_push_ty(return_type.into());
+        }
+
+        let method_ref = self.class_writer.constant_pool.methodref(class.as_ref().to_owned(), name.as_ref().to_owned(), desc.to_string());
+        self.code().write_u8(0xB8); // invokestatic
+        self.code().write_u16(method_ref);
+    }
+
+    pub fn emit_invokevirtual(&mut self, class: impl AsRef<str>, name: impl AsRef<str>, desc: MethodDescriptor) {
+        self.record_pop(); // "this"
+        desc.0.iter().for_each(|_| { self.record_pop(); });
+        if let Some(return_type) = &desc.1 {
+            self.record_push_ty(return_type.into());
+        }
+
+        let method_ref = self.class_writer.constant_pool.methodref(class.as_ref().to_owned(), name.as_ref().to_owned(), desc.to_string());
+        self.code().write_u8(0xb6); // invokevirtual
+        self.code().write_u16(method_ref);
+    }
+
+    pub fn emit_invokeinterface(&mut self, class: impl AsRef<str>, name: impl AsRef<str>, desc: MethodDescriptor) {
+        let stack_s = self.current_frame.stack.len();
+        self.record_pop(); // "this"
+        desc.0.iter().for_each(|_| { self.record_pop(); });
+        let arg_count = (stack_s - self.current_frame.stack.len()) as u8;
+        if let Some(return_type) = &desc.1 {
+            self.record_push_ty(return_type.into());
+        }
+
+        let method_ref = self.class_writer.constant_pool.interfacemethodref(class.as_ref().to_owned(), name.as_ref().to_owned(), desc.to_string());
+        self.code().write_u8(0xb9); // invokeinterface
+        self.code().write_u16(method_ref);
+
+        self.code().write_u8(arg_count);
+        self.code().write_u8(0);
+    }
+
     pub fn set_target(&mut self, target_index: InstructionTarget, target: CodeLocation) {
         let offset = target.0 - target_index.instruction_location.0;
         let wpos = self.code().get_wpos();
@@ -351,8 +442,57 @@ impl <W> MethodWriter<'_, W> where W: Write {
 
 #[derive(Clone)]
 pub struct StackMapFrame {
-    stack: Vec<VerificationType>,
-    locals: Vec<VerificationType>,
+    stack: VerificationTypeList,
+    locals: VerificationTypeList,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct VerificationTypeList(Vec<VerificationType>, usize);
+
+impl From<Vec<VerificationType>> for VerificationTypeList {
+    fn from(from: Vec<VerificationType>) -> Self {
+        let mut len = 0;
+        for v in &from {
+            if *v == VerificationType::Long || *v == VerificationType::Double {
+                len += 2;
+            } else {
+                len += 1;
+            }
+        }
+        VerificationTypeList(from, len)
+    }
+}
+
+impl VerificationTypeList {
+    pub fn push(&mut self, element: VerificationType) {
+        if element == VerificationType::Long || element == VerificationType::Double {
+            self.1 += 2;
+        } else {
+            self.1 += 1;
+        }
+        self.0.push(element);
+    }
+    pub fn pop(&mut self) -> Option<VerificationType> {
+        let r = self.0.pop();
+        if let Some(v) = &r {
+            if *v == VerificationType::Long || *v == VerificationType::Double {
+                self.1 -= 2;
+            } else {
+                self.1 -= 1;
+            }
+        }
+        return r;
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn len(&self) -> usize {
+        self.1
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &VerificationType> {
+        return self.0.iter();
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -374,8 +514,14 @@ impl VerificationType {
             VerificationType::Top => b.write_u8(0),
             VerificationType::Integer => b.write_u8(1),
             VerificationType::Float => b.write_u8(2),
-            VerificationType::Long => b.write_u8(4),
-            VerificationType::Double => b.write_u8(3),
+            VerificationType::Long => {
+                b.write_u8(4);
+                VerificationType::Top.serialize(b);
+            },
+            VerificationType::Double => {
+                b.write_u8(3);
+                VerificationType::Top.serialize(b);
+            },
             VerificationType::Null => b.write_u8(5),
             VerificationType::UninitializedThis => b.write_u8(6),
             VerificationType::Object(_) => todo!(),
@@ -387,22 +533,21 @@ impl VerificationType {
     }
 }
 
-fn calculate_initial_stackframe(descriptor: &FunctionDescriptor) -> StackMapFrame {
+fn calculate_initial_stackframe(descriptor: &MethodDescriptor) -> StackMapFrame {
     StackMapFrame {
-        stack: Vec::new(), // Stack starts empty
+        stack: Vec::new().into(), // Stack starts empty
         locals: descriptor.0.iter().flat_map(|d| match d {
             DescriptorEntry::Byte => vec![VerificationType::Integer],
             DescriptorEntry::Char => vec![VerificationType::Integer],
-            // TODO Are we handling doubles/longs correctly here??
-            DescriptorEntry::Double => vec![VerificationType::Double, VerificationType::Top],
+            DescriptorEntry::Double => vec![VerificationType::Double],
             DescriptorEntry::Float => vec![VerificationType::Float],
             DescriptorEntry::Int => vec![VerificationType::Integer],
-            DescriptorEntry::Long => vec![VerificationType::Double, VerificationType::Top],
+            DescriptorEntry::Long => vec![VerificationType::Long],
             DescriptorEntry::Class(x) => vec![VerificationType::Object(x.to_string())],
             DescriptorEntry::Short => vec![VerificationType::Integer],
             DescriptorEntry::Boolean => vec![VerificationType::Integer],
             DescriptorEntry::Array(x) => vec![VerificationType::Object(format!("[{x}"))],
-        }).collect(),
+        }).collect::<Vec<_>>().into(),
     }
 }
 
@@ -442,7 +587,7 @@ pub struct MethodMetadata {
     pub is_strictfp: bool,
     pub is_synthetic: bool,
     pub name: String,
-    pub descriptor: FunctionDescriptor,
+    pub descriptor: MethodDescriptor,
 }
 
 pub struct MethodData {
@@ -451,7 +596,7 @@ pub struct MethodData {
     desc_ref: ConstantPoolReference,
     code: ByteBuffer,
     max_stack_size: usize,
-    descriptor: FunctionDescriptor,
+    descriptor: MethodDescriptor,
     stackmaptable: BTreeMap<CodeLocation, StackMapFrame>,
 }
 
@@ -551,6 +696,7 @@ pub enum Visibility {
 }
 
 /// Represents a type inside of the java stack or the java local variable table
+#[derive(Debug, Clone, Copy)]
 pub enum JavaType {
     Int,
     Long,
@@ -559,8 +705,8 @@ pub enum JavaType {
     Reference
 }
 
-impl From<DescriptorEntry> for JavaType {
-    fn from(value: DescriptorEntry) -> Self {
+impl From<&DescriptorEntry> for JavaType {
+    fn from(value: &DescriptorEntry) -> Self {
         match value {
             DescriptorEntry::Byte => JavaType::Int,
             DescriptorEntry::Char => JavaType::Int,
