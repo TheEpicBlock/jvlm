@@ -4,6 +4,7 @@ use std::{env::args, fs::File, io::BufWriter, path::Path};
 use inkwell::context::Context;
 use jvlm::{compile, options::JvlmCompileOptions};
 
+pub(crate) mod java_types;
 mod classfile;
 
 fn main() {

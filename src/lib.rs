@@ -14,6 +14,7 @@ use zip::{write::SimpleFileOptions, ZipWriter};
 mod memory;
 mod classfile;
 mod llvm_intrinsics;
+pub(crate) mod java_types;
 pub mod options;
 pub mod linker;
 

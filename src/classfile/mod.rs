@@ -1,9 +1,10 @@
-use std::{collections::BTreeMap, io::{self, Write}};
+use std::{collections::BTreeMap, io::{self, Write}, ops::{Deref, DerefMut}};
 use bytebuffer::ByteBuffer;
 use byteorder::WriteBytesExt;
 use constant_pool::{ConstantPool, ConstantPoolReference};
 use descriptor::{DescriptorEntry, FieldDescriptor, MethodDescriptor};
-use inkwell::targets::TargetData;
+
+use crate::java_types::{JInt, JLong};
 
 mod constant_pool;
 pub(crate) mod descriptor;
@@ -214,7 +215,7 @@ impl <W> MethodWriter<'_, W> where W: Write {
         self.record_pop();
     }
 
-    pub fn emit_constant_int(&mut self, integer: i32) {
+    pub fn emit_constant_int(&mut self, integer: JInt) {
         let r = self.class_writer.constant_pool.int(integer);
         if let Some(r) = u8::try_from(r).ok() {
             self.code().write_u8(0x12); //LDC
@@ -224,6 +225,30 @@ impl <W> MethodWriter<'_, W> where W: Write {
             self.code().write_u16(r);
         }
         self.record_push(VerificationType::Integer);
+    }
+
+    pub fn emit_constant_long(&mut self, long: JLong) {
+        if let Some(i) = JInt::try_from(long).ok() {
+            self.emit_constant_int(i);
+            self.emit_i2l();
+        } else {
+            todo!()
+        }
+        // let r = self.class_writer.constant_pool.int(long);
+        // if let Some(r) = u8::try_from(r).ok() {
+        //     self.code().write_u8(0x12); //LDC
+        //     self.code().write_u8(r);
+        // } else {
+        //     self.code().write_u8(0x13); //LDC_w
+        //     self.code().write_u16(r);
+        // }
+        // self.record_push(VerificationType::Integer);
+    }
+
+    pub fn emit_i2l(&mut self) {
+        self.record_pop();
+        self.record_push(VerificationType::Long);
+        self.code().write_u8(0x85);
     }
 
     pub fn emit_return(&mut self, ty: Option<JavaType>) {
@@ -400,8 +425,57 @@ impl <W> MethodWriter<'_, W> where W: Write {
 
 #[derive(Clone)]
 pub struct StackMapFrame {
-    stack: Vec<VerificationType>,
-    locals: Vec<VerificationType>,
+    stack: VerificationTypeList,
+    locals: VerificationTypeList,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct VerificationTypeList(Vec<VerificationType>, usize);
+
+impl From<Vec<VerificationType>> for VerificationTypeList {
+    fn from(from: Vec<VerificationType>) -> Self {
+        let mut len = 0;
+        for v in &from {
+            if *v == VerificationType::Long || *v == VerificationType::Double {
+                len += 2;
+            } else {
+                len += 1;
+            }
+        }
+        VerificationTypeList(from, len)
+    }
+}
+
+impl VerificationTypeList {
+    pub fn push(&mut self, element: VerificationType) {
+        if element == VerificationType::Long || element == VerificationType::Double {
+            self.1 += 2;
+        } else {
+            self.1 += 1;
+        }
+        self.0.push(element);
+    }
+    pub fn pop(&mut self) -> Option<VerificationType> {
+        let r = self.0.pop();
+        if let Some(v) = &r {
+            if *v == VerificationType::Long || *v == VerificationType::Double {
+                self.1 -= 2;
+            } else {
+                self.1 -= 1;
+            }
+        }
+        return r;
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn len(&self) -> usize {
+        self.1
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &VerificationType> {
+        return self.0.iter();
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -423,8 +497,14 @@ impl VerificationType {
             VerificationType::Top => b.write_u8(0),
             VerificationType::Integer => b.write_u8(1),
             VerificationType::Float => b.write_u8(2),
-            VerificationType::Long => b.write_u8(4),
-            VerificationType::Double => b.write_u8(3),
+            VerificationType::Long => {
+                b.write_u8(4);
+                VerificationType::Top.serialize(b);
+            },
+            VerificationType::Double => {
+                b.write_u8(3);
+                VerificationType::Top.serialize(b);
+            },
             VerificationType::Null => b.write_u8(5),
             VerificationType::UninitializedThis => b.write_u8(6),
             VerificationType::Object(_) => todo!(),
@@ -438,20 +518,19 @@ impl VerificationType {
 
 fn calculate_initial_stackframe(descriptor: &MethodDescriptor) -> StackMapFrame {
     StackMapFrame {
-        stack: Vec::new(), // Stack starts empty
+        stack: Vec::new().into(), // Stack starts empty
         locals: descriptor.0.iter().flat_map(|d| match d {
             DescriptorEntry::Byte => vec![VerificationType::Integer],
             DescriptorEntry::Char => vec![VerificationType::Integer],
-            // TODO Are we handling doubles/longs correctly here??
-            DescriptorEntry::Double => vec![VerificationType::Double, VerificationType::Top],
+            DescriptorEntry::Double => vec![VerificationType::Double],
             DescriptorEntry::Float => vec![VerificationType::Float],
             DescriptorEntry::Int => vec![VerificationType::Integer],
-            DescriptorEntry::Long => vec![VerificationType::Double, VerificationType::Top],
+            DescriptorEntry::Long => vec![VerificationType::Long],
             DescriptorEntry::Class(x) => vec![VerificationType::Object(x.to_string())],
             DescriptorEntry::Short => vec![VerificationType::Integer],
             DescriptorEntry::Boolean => vec![VerificationType::Integer],
             DescriptorEntry::Array(x) => vec![VerificationType::Object(format!("[{x}"))],
-        }).collect(),
+        }).collect::<Vec<_>>().into(),
     }
 }
 

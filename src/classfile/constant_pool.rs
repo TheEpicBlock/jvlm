@@ -3,6 +3,8 @@ use byteorder::WriteBytesExt;
 
 use indexmap::IndexSet;
 
+use crate::java_types::JInt;
+
 pub type ConstantPoolReference = u16;
 
 #[derive(Default)]
@@ -38,7 +40,7 @@ impl ConstantPool {
         let name_and_type = self.name_and_type(name, descriptor);
         self.entries.insert_full(ConstantPoolEntry::InterfaceMethodRef { class, name_and_type }).0 as ConstantPoolReference + 1
     }
-    pub fn int(&mut self, int: i32) -> ConstantPoolReference {
+    pub fn int(&mut self, int: JInt) -> ConstantPoolReference {
         self.entries.insert_full(ConstantPoolEntry::Int(int)).0 as ConstantPoolReference + 1
     }
 
@@ -90,7 +92,7 @@ enum ConstantPoolEntry {
     Class(ConstantPoolReference),
     // TODO proper java-like encoding of strings
     Utf8(String),
-    Int(i32),
+    Int(JInt),
     FieldRef { class: ConstantPoolReference, name_and_type: ConstantPoolReference },
     MethodRef { class: ConstantPoolReference, name_and_type: ConstantPoolReference },
     InterfaceMethodRef { class: ConstantPoolReference, name_and_type: ConstantPoolReference },

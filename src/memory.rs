@@ -80,6 +80,7 @@ impl MemoryInstructionEmitter for MemorySegmentEmitter {
         
         ctx.java_method.emit_load(crate::classfile::JavaType::Reference, stack_pointer.base);
         ctx.java_method.emit_load(crate::classfile::JavaType::Int, stack_pointer.offset);
+        ctx.java_method.emit_i2l();
         ctx.java_method.emit_invokevirtual("java/lang/foreign/MemorySegment", "asSlice", MethodDescriptor(vec![DescriptorEntry::Long], Some(DescriptorEntry::Class("java/lang/foreign/MemorySegment".to_owned()))));
     }
 
@@ -96,7 +97,7 @@ impl MemoryInstructionEmitter for MemorySegmentEmitter {
             _ => todo!()
         };
         ctx.java_method.emit_getstatic("java/lang/foreign/ValueLayout", value_layout.2, FieldDescriptor::Class(value_layout.0.to_owned()));
-        ctx.java_method.emit_constant_int(0);
+        ctx.java_method.emit_constant_long(0);
         ctx.java_method.emit_invokevirtual("java/lang/foreign/MemorySegment", "get", MethodDescriptor(vec![DescriptorEntry::Class(value_layout.0.to_owned()), DescriptorEntry::Long], Some(value_layout.1)));
         // TODO convert to target type
     }
