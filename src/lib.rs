@@ -315,7 +315,12 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
             }
         }
         InstructionOpcode::Store => {
-            // TODO
+            // load pointer
+            load_operand(v.get_operand(1), e);
+            memory::MemorySegmentEmitter::store(e, |e| {
+                // load value
+                load_operand(v.get_operand(0), e);
+            }, v.get_operand(0).unwrap().unwrap_left().get_type().as_any_type_enum());
         }
         InstructionOpcode::Load => {
             // load pointer
@@ -329,6 +334,7 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
             if let Some(handler) = get_instrinsic_handler(f.get_name()) {
                 handler();
             } else {
+                memory::MemorySegmentEmitter::pre_call(e);
                 let loc = e.g.name_mapper.get_java_location(f.get_name().to_str().unwrap());
                 v.get_operands().take((v.get_num_operands()-1) as usize).for_each(|o| load_operand(o, e));
                 e.java_method.emit_invokestatic(loc.class, loc.name, get_descriptor(&f));

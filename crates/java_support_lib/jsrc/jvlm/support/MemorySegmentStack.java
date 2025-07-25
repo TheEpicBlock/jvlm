@@ -23,4 +23,7 @@ public final class MemorySegmentStack {
     public final static int getOffset() {
         return STACK_POINTER.get();
     }
+    public final static void setOffset(int newOffset) {
+        STACK_POINTER.set(newOffset);
+    }
 }

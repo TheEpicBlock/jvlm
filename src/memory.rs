@@ -21,7 +21,14 @@ pub trait MemoryInstructionEmitter: Sized {
     /// Do a stack allocation with a constant size. Which is equivalent to calling `alloca` in llvm. The instructions emitted should
     /// create a pointer to the newly allocated region.
     fn const_stack_alloc<W: Write>(ctx: &mut FunctionTranslationContext<'_,'_, W, Self>, size: u64);
+    /// Should be called whenever an external function is called
+    fn pre_call<'ctx, W: Write>(ctx: &mut FunctionTranslationContext<'ctx,'_, W, Self>);
+    /// Load a value from a memory location.
+    /// Expects the stack to contain a pointer, will leave the stack containing the value that was loaded.
     fn load<'ctx, W: Write>(ctx: &mut FunctionTranslationContext<'ctx,'_, W, Self>, ty: AnyTypeEnum<'ctx>);
+    /// Stores a value into a memory location.
+    /// Expects the stack to contain a pointer. Expects the provided function to push the value that needs to be stored to the stack.
+    fn store<'ctx, W: Write>(ctx: &mut FunctionTranslationContext<'ctx,'_, W, Self>, stack_pusher: impl FnOnce(&mut FunctionTranslationContext<'ctx,'_, W, Self>) -> (), ty: AnyTypeEnum<'ctx>);
 }
 
 /// Memory allocation strategy based on [java.lang.foreign.MemorySegment](https://docs.oracle.com/en/java/javase/22/docs/api/java.base/java/lang/foreign/package-summary.html),
@@ -33,6 +40,7 @@ impl MemoryStrategy for MemorySegmentStrategy {
     fn emitter_for_function(&self) -> Self::MemoryInstructionEmitter {
         MemorySegmentEmitter {
             stack_pointer: None,
+            dirty: false,
         }
     }
     
@@ -52,7 +60,8 @@ struct StackPointerLocalVariables {
 
 pub struct MemorySegmentEmitter {
     /// Local variables which stores the values for the stack pointer
-    stack_pointer: Option<StackPointerLocalVariables>
+    stack_pointer: Option<StackPointerLocalVariables>,
+    dirty: bool,
 }
 
 impl MemorySegmentEmitter {
@@ -73,6 +82,18 @@ impl MemorySegmentEmitter {
     }
 }
 
+fn value_layout(size: u64, target_type: JavaType) -> (&'static str, DescriptorEntry, &'static str) {
+    match (size, target_type) {
+        (0..=8, _) => ("java/lang/foreign/ValueLayout$OfByte", DescriptorEntry::Byte, "JAVA_BYTE"),
+        (9..=16, _) => ("java/lang/foreign/ValueLayout$OfShort", DescriptorEntry::Short, "JAVA_SHORT"),
+        (17..=32, JavaType::Float) => ("java/lang/foreign/ValueLayout$OfFloat", DescriptorEntry::Float, "JAVA_FLOAT"),
+        (17..=32, _) => ("java/lang/foreign/ValueLayout$OfInt", DescriptorEntry::Int, "JAVA_INT"),
+        (33..=64, JavaType::Double) => ("java/lang/foreign/ValueLayout$OfDouble", DescriptorEntry::Double, "JAVA_DOUBLE"),
+        (33..=64, _) => ("java/lang/foreign/ValueLayout$OfLong", DescriptorEntry::Long, "JAVA_LONG"),
+        _ => todo!()
+    }
+}
+
 impl MemoryInstructionEmitter for MemorySegmentEmitter {
     fn const_stack_alloc<W: Write>(ctx: &mut FunctionTranslationContext<'_,'_, W, Self>, size: u64) {
         let stack_pointer = Self::get_stack_pointer_local(ctx);
@@ -82,23 +103,36 @@ impl MemoryInstructionEmitter for MemorySegmentEmitter {
         ctx.java_method.emit_load(crate::classfile::JavaType::Int, stack_pointer.offset);
         ctx.java_method.emit_i2l();
         ctx.java_method.emit_invokeinterface("java/lang/foreign/MemorySegment", "asSlice", MethodDescriptor(vec![DescriptorEntry::Long], Some(DescriptorEntry::Class("java/lang/foreign/MemorySegment".to_owned()))));
+        ctx.memory_allocation_info.dirty = true;
+    }
+    
+    fn pre_call<'ctx, W: Write>(ctx: &mut FunctionTranslationContext<'ctx,'_, W, Self>) {
+        // Synchronize the offset pointer
+        if let Some(stack_pointer) = ctx.memory_allocation_info.stack_pointer && ctx.memory_allocation_info.dirty {
+            ctx.java_method.emit_load(crate::classfile::JavaType::Int, stack_pointer.offset);
+            ctx.java_method.emit_invokestatic(java_support_lib::MEMORYSEGMENTSTACK.name, "setOffset", MethodDescriptor(vec![DescriptorEntry::Int], None));
+        }
     }
 
     fn load<'ctx, W: Write>(ctx: &mut FunctionTranslationContext<'ctx,'_, W, Self>, ty: AnyTypeEnum<'ctx>) {
         let size = ctx.g.target_data.get_abi_size(&ty);
         let target_type = get_java_type(ty);
-        let value_layout = match (size, target_type) {
-            (0..=8, _) => ("java/lang/foreign/ValueLayout$OfByte", DescriptorEntry::Byte, "JAVA_BYTE"),
-            (9..=16, _) => ("java/lang/foreign/ValueLayout$OfShort", DescriptorEntry::Short, "JAVA_SHORT"),
-            (17..=32, JavaType::Float) => ("java/lang/foreign/ValueLayout$OfFloat", DescriptorEntry::Float, "JAVA_FLOAT"),
-            (17..=32, _) => ("java/lang/foreign/ValueLayout$OfInt", DescriptorEntry::Int, "JAVA_INT"),
-            (33..=64, JavaType::Double) => ("java/lang/foreign/ValueLayout$OfDouble", DescriptorEntry::Double, "JAVA_DOUBLE"),
-            (33..=64, _) => ("java/lang/foreign/ValueLayout$OfLong", DescriptorEntry::Long, "JAVA_LONG"),
-            _ => todo!()
-        };
+        let value_layout = value_layout(size, target_type);
         ctx.java_method.emit_getstatic("java/lang/foreign/ValueLayout", value_layout.2, FieldDescriptor::Class(value_layout.0.to_owned()));
         ctx.java_method.emit_constant_long(0);
         ctx.java_method.emit_invokeinterface("java/lang/foreign/MemorySegment", "get", MethodDescriptor(vec![DescriptorEntry::Class(value_layout.0.to_owned()), DescriptorEntry::Long], Some(value_layout.1)));
         // TODO convert to target type
     }
+    
+    fn store<'ctx, W: Write>(ctx: &mut FunctionTranslationContext<'ctx,'_, W, Self>, stack_pusher: impl FnOnce(&mut FunctionTranslationContext<'ctx,'_, W, Self>) -> (), ty: AnyTypeEnum<'ctx>) {
+        let size = ctx.g.target_data.get_abi_size(&ty);
+        let supplied_type = get_java_type(ty);
+        let value_layout = value_layout(size, supplied_type);
+        ctx.java_method.emit_getstatic("java/lang/foreign/ValueLayout", value_layout.2, FieldDescriptor::Class(value_layout.0.to_owned()));
+        ctx.java_method.emit_constant_long(0);
+        stack_pusher(ctx);
+        // TODO convert from supplied type
+        ctx.java_method.emit_invokeinterface("java/lang/foreign/MemorySegment", "set", MethodDescriptor(vec![DescriptorEntry::Class(value_layout.0.to_owned()), DescriptorEntry::Long, value_layout.1.into()], None));
+    }
+    
 }

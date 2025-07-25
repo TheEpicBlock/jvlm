@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use super::JavaType;
+
 pub enum DescriptorEntry {
     Byte,
     Char,
@@ -46,5 +48,17 @@ impl Display for MethodDescriptor {
             None => write!(f, "V")?,
         }
         Ok(())
+    }
+}
+
+impl From<JavaType> for DescriptorEntry {
+    fn from(value: JavaType) -> Self {
+        match value {
+            JavaType::Int => Self::Int,
+            JavaType::Long => Self::Long,
+            JavaType::Float => Self::Float,
+            JavaType::Double => Self::Double,
+            JavaType::Reference => todo!(),
+        }
     }
 }
