@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = [ "crates/java_support_lib","rustc_codegen_jvlm"]
+members = [ "crates/cstr_ops", "crates/java_support_lib","rustc_codegen_jvlm"]
 
 [package]
 name = "jvlm"
@@ -21,3 +21,4 @@ llvm-sys = { version = "*" }
 inkwell = { git = "https://github.com/stevefan1999-personal/inkwell.git", features = ["llvm20-1"], default-features = false}
 zip = "4.2.0"
 java_support_lib = { path = "crates/java_support_lib" }
+cstr_ops = { path = "crates/cstr_ops" }

@@ -5,6 +5,7 @@ use std::{collections::HashMap, io::{Seek, Write}, mem::ManuallyDrop};
 
 use classfile::{descriptor::{DescriptorEntry, MethodDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
 use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
+use llvm_intrinsics::get_instrinsic_handler;
 use llvm_sys::{core::LLVMGetTarget, target::LLVMGetModuleDataLayout};
 use memory::{MemoryInstructionEmitter, MemorySegmentStrategy, MemoryStrategy};
 use options::{FunctionNameMapper, JvlmCompileOptions};
@@ -12,6 +13,7 @@ use zip::{write::SimpleFileOptions, ZipWriter};
 
 mod memory;
 mod classfile;
+mod llvm_intrinsics;
 pub mod options;
 pub mod linker;
 
@@ -22,6 +24,8 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
     
     let mut methods_per_class = HashMap::<String, Vec<(String, FunctionValue)>>::default();
     for f in llvm_ir.get_functions() {
+        // Don't generate code for functions that don't have code (external function declarations)
+        if f.get_basic_blocks().len() == 0 { continue; }
         // Determine what java name this function will get, and which classfile this function be compiled into
         let location = options.name_mapper.get_java_location(f.get_name().to_str().unwrap());
         methods_per_class
@@ -321,10 +325,13 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
             // For some reason the function pointer is the last argument
             let func = v.get_operand(v.get_num_operands() - 1).unwrap().unwrap_left();
             let f = func.into_pointer_value().as_any_value_enum().into_function_value();
-            let loc = e.g.name_mapper.get_java_location(f.get_name().to_str().unwrap());
-
-            v.get_operands().take((v.get_num_operands()-1) as usize).for_each(|o| load_operand(o, e));
-            e.java_method.emit_invokestatic(loc.class, loc.name, get_descriptor(&f));
+            if let Some(handler) = get_instrinsic_handler(f.get_name()) {
+                handler();
+            } else {
+                let loc = e.g.name_mapper.get_java_location(f.get_name().to_str().unwrap());
+                v.get_operands().take((v.get_num_operands()-1) as usize).for_each(|o| load_operand(o, e));
+                e.java_method.emit_invokestatic(loc.class, loc.name, get_descriptor(&f));
+            }
         }
         _ => todo!("{v:#?}")
     }
