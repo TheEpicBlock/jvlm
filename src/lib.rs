@@ -1,13 +1,13 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
-use std::{collections::HashMap, io::{Seek, Write}, mem::ManuallyDrop};
+use std::{collections::HashMap, ffi::CString, io::{Seek, Write}, mem::ManuallyDrop};
 
 use classfile::{descriptor::{DescriptorEntry, MethodDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
 use cstr_ops::CStrExt;
-use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef, IntType}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
+use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef, IntType}, values::{AggregateValue, AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, StructValue}, Either};
 use llvm_intrinsics::get_instrinsic_handler;
-use llvm_sys::{debuginfo::LLVMDITypeGetFlags, target::LLVMGetModuleDataLayout};
+use llvm_sys::{core::{LLVMGetAggregateElement, LLVMIsAConstantArray}, debuginfo::LLVMDITypeGetFlags, target::LLVMGetModuleDataLayout};
 use memory::{MemoryInstructionEmitter, MemorySegmentStrategy, MemoryStrategy};
 use options::{ExtraTypeInfo, FunctionNameMapper, FunctionType, JvlmCompileOptions};
 use zip::{write::SimpleFileOptions, DateTime, ZipWriter};
@@ -22,6 +22,21 @@ pub mod linker;
 pub type LlvmModule<'a> = Module<'a>;
 
 pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileOptions<FNM>) where FNM: FunctionNameMapper {
+    // Read llvm annotations
+    // these are strings which can be attached to pretty much any llvm type. Handy for implementing target-specific stuff
+    let mut parsed_annotations = HashMap::new();
+    let annotation = llvm_ir.get_global("llvm.global.annotations");
+    if let Some(annotation) = annotation {
+        let annotation = annotation.get_initializer().unwrap().into_array_value();
+        for i in 0..(annotation.get_type().len()) {
+            let annotation_struct = unsafe { AnyValueEnum::new(LLVMGetAggregateElement(annotation.as_value_ref(), 0))}.into_struct_value();
+            let annotation_target = unsafe { AnyValueEnum::new(LLVMGetAggregateElement(annotation_struct.as_value_ref(), 0))}.into_pointer_value();
+            let annotation_content = unsafe { GlobalValue::new(LLVMGetAggregateElement(annotation_struct.as_value_ref(), 1))};
+            let annotation_content = CString::from_vec_with_nul(annotation_content.get_initializer().unwrap().into_array_value().as_const_string().unwrap().into()).unwrap().into_string().unwrap();
+            parsed_annotations.insert(annotation_target, annotation_content);
+        }
+    }
+
     let mut out = ZipWriter::new(out);
     
     let mut methods_per_class = HashMap::<String, Vec<(String, ExtraTypeInfo, FunctionValue)>>::default();
@@ -83,6 +98,18 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
             translate_method(method, &global_ctx, method_output)
         }
         out = class_output.finalize();
+    }
+
+    // We support including globals as files inside of the jar, lets find those globals and write them
+    for global in llvm_ir.get_globals() {
+        if let Some(annotation) = parsed_annotations.get(&global.as_pointer_value()) {
+            // TODO allow including as resource without specifying the location
+            if let Some(target) = annotation.strip_prefix("jvlm::include_as_resource(") {
+                let target = target.strip_suffix(")").expect("Expected closing bracket after jvlm::include_as_resource");
+                out.start_file(target, SimpleFileOptions::default().last_modified_time(DateTime::default())).unwrap();
+                out.write_all(global.get_initializer().unwrap().into_array_value().as_const_string().unwrap()).unwrap();
+            }
+        }
     }
 
     // Add any global support classes which are needed for memory management
