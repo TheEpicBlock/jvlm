@@ -15,6 +15,13 @@ pub trait FunctionNameMapper {
     /// Returns `Some` if this function is a special way to use the `new` bytecode operation.
     /// In this case, this function should return the name of the class which should be new'ed
     fn is_special_new_function(&self, c_name: &str) -> Option<String>;
+    fn get_static_field_location(&self, c_name: &str) -> StaticFieldLocation;
+}
+
+pub struct StaticFieldLocation {
+    pub class: String,
+    pub name: String,
+    pub extra_type_info: Option<String>,
 }
 
 #[derive(Debug)]
@@ -53,7 +60,7 @@ const JVLM_SPECIAL_SYNTAX: &[(&'static str, FunctionType, bool)] = &[
 impl DefaultFunctionNameMapper {
     fn demangle(&self, c_name: &str) -> String {
         // Within transliterated java names, we give characters some different meanings
-        return c_name.replace("_", "/").replace("\u{022A}", "<").replace("\u{022B}", ">")
+        return c_name.replace("_", "/").replace("\u{022A}", "<").replace("\u{022B}", ">").replace("\u{022C}", "_")
     }
 
     fn split_typeinfo<'a>(&self, c_name: &'a str) -> (&'a str, Option<&'a str>) {
@@ -104,5 +111,27 @@ impl FunctionNameMapper for DefaultFunctionNameMapper {
             return Some(self.demangle(target));
         }
         return None;
+    }
+    
+    fn get_static_field_location(&self, c_name: &str) -> StaticFieldLocation {
+        let (c_name, type_info) = self.split_typeinfo(c_name);
+        let type_info = type_info.map(|i| self.parse_type_info(i));
+        let type_info = type_info.map(|i| i.into_iter().next().unwrap());
+
+        if let Some(name) = c_name.strip_prefix("jvlm__") {
+            let e = self.demangle(name);
+            let e = e.rsplit_once("/").unwrap();
+            return StaticFieldLocation {
+                class: e.0.to_owned(),
+                name: e.1.to_owned(),
+                extra_type_info: type_info,
+            };
+        }
+
+        return StaticFieldLocation {
+            class: format!("jvlm/s/{}", c_name),
+            name: c_name.to_string(),
+            extra_type_info: type_info,
+        };
     }
 }

@@ -178,7 +178,11 @@ fn translate<'ctx, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationC
             if let Some(instr) = pointer_value.as_instruction() {
                 translate_instruction(instr, e);
             } else {
-                todo!("can't handle {pointer_value}")
+                if pointer_value.is_null() {
+                    e.java_method.emit_constant_null();
+                } else {
+                    todo!("can't handle {pointer_value}")
+                }
             }
         },
         AnyValueEnum::StructValue(struct_value) => todo!(),
@@ -366,8 +370,15 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
         }
         InstructionOpcode::Load => {
             // load pointer
-            load_operand(v.get_operand(0), e);
-            memory::MemorySegmentEmitter::load(e, v.get_type());
+            let ptr = v.get_operand(0).unwrap().unwrap_left().into_pointer_value();
+            if ptr.is_const() {
+                let name = ptr.get_name().to_str().unwrap();
+                let mut loc = e.g.name_mapper.get_static_field_location(name);
+                e.java_method.emit_getstatic(loc.class, loc.name, get_descriptor_entry(v.get_type(), &mut || loc.extra_type_info.take().unwrap()));
+            } else {
+                load_operand(v.get_operand(0), e);
+                memory::MemorySegmentEmitter::load(e, v.get_type());
+            }
         }
         InstructionOpcode::Call => {
             // For some reason the function pointer is the last argument
@@ -381,7 +392,6 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
                 if let Some(target) = e.g.name_mapper.is_special_new_function(name) {
                     e.java_method.emit_new(target);
                 } else {
-                    dbg!(&name);
                     let loc = e.g.name_mapper.get_java_location(name);
                     // If the java code is guaranteed never to enter back into our code we can technically omit this
                     memory::MemorySegmentEmitter::pre_call(e);

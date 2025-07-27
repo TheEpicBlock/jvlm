@@ -210,7 +210,7 @@ impl <W> MethodWriter<'_, W> where W: Write {
             JavaType::Long => self.emit_load_store_inner(0x3f, 0x37, index),
             JavaType::Float => self.emit_load_store_inner(0x43, 0x38, index),
             JavaType::Double => self.emit_load_store_inner(0x47, 0x39, index),
-            JavaType::Reference => self.emit_load_store_inner(0x4b, 0x40, index),
+            JavaType::Reference => self.emit_load_store_inner(0x4b, 0x3a, index),
         }
         self.record_pop();
     }
@@ -243,6 +243,11 @@ impl <W> MethodWriter<'_, W> where W: Write {
         //     self.code().write_u16(r);
         // }
         // self.record_push(VerificationType::Integer);
+    }
+
+    pub fn emit_constant_null(&mut self) {
+        self.record_push(VerificationType::Object("java/lang/Object".to_owned()));
+        self.code().write_u8(0x1); // aconst_null
     }
 
     pub fn emit_i2l(&mut self) {
