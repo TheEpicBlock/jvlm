@@ -4,11 +4,12 @@
 use std::{collections::HashMap, io::{Seek, Write}, mem::ManuallyDrop};
 
 use classfile::{descriptor::{DescriptorEntry, MethodDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
+use cstr_ops::CStrExt;
 use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef, IntType}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
 use llvm_intrinsics::get_instrinsic_handler;
-use llvm_sys::target::LLVMGetModuleDataLayout;
+use llvm_sys::{debuginfo::LLVMDITypeGetFlags, target::LLVMGetModuleDataLayout};
 use memory::{MemoryInstructionEmitter, MemorySegmentStrategy, MemoryStrategy};
-use options::{FunctionNameMapper, JvlmCompileOptions};
+use options::{ExtraTypeInfo, FunctionNameMapper, FunctionType, JvlmCompileOptions};
 use zip::{write::SimpleFileOptions, DateTime, ZipWriter};
 
 mod memory;
@@ -23,16 +24,21 @@ pub type LlvmModule<'a> = Module<'a>;
 pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileOptions<FNM>) where FNM: FunctionNameMapper {
     let mut out = ZipWriter::new(out);
     
-    let mut methods_per_class = HashMap::<String, Vec<(String, FunctionValue)>>::default();
+    let mut methods_per_class = HashMap::<String, Vec<(String, ExtraTypeInfo, FunctionValue)>>::default();
     for f in llvm_ir.get_functions() {
         // Don't generate code for functions that don't have code (external function declarations)
         if f.get_basic_blocks().len() == 0 { continue; }
         // Determine what java name this function will get, and which classfile this function be compiled into
         let location = options.name_mapper.get_java_location(f.get_name().to_str().unwrap());
+        if location.external {
+            panic!("Function {} should not be defined!", f.get_name().to_str().unwrap());
+        } else if location.ty != FunctionType::Static {
+            panic!("Can not yet emit non-static functions");
+        }
         methods_per_class
             .entry(location.class)
             .or_insert_with(|| vec![])
-            .push((location.name, f));
+            .push((location.name, location.extra_type_info, f));
     }
 
     // SAFETY: result should not be dropped
@@ -58,7 +64,7 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
             super_class: "java/lang/Object".to_owned(),
         };
         let mut class_output = ClassFileWriter::write_classfile(out, class_meta).unwrap();
-        for (meth_name, method) in methods {
+        for (meth_name, type_info, method) in methods {
             let method_metadata = MethodMetadata {
                 visibility: classfile::Visibility::PUBLIC,
                 is_static: true,
@@ -71,7 +77,7 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
                 is_strictfp: true,
                 is_synthetic: false,
                 name: meth_name,
-                descriptor: get_descriptor(&method),
+                descriptor: get_descriptor(&method, type_info, false),
             };
             let method_output = class_output.write_method(method_metadata);
             translate_method(method, &global_ctx, method_output)
@@ -97,13 +103,15 @@ fn translate_method<W: Write>(f: FunctionValue<'_>, global_ctx: &GlobalTranslati
     }
 }
 
-fn get_descriptor(function: &FunctionValue<'_>) -> MethodDescriptor {
-    let params = function.get_params().iter().map(|p| get_descriptor_entry(p.get_type().as_any_type_enum())).collect();
-    let return_ty = function.get_type().get_return_type().map(|t| get_descriptor_entry(t.as_any_type_enum()));
+fn get_descriptor(function: &FunctionValue<'_>, extra_info: ExtraTypeInfo, nothis: bool) -> MethodDescriptor {
+    let mut extra_info_iter = extra_info.map(|i| i.into_iter());
+    let mut extra_info_getter = || (&mut extra_info_iter).as_mut().unwrap().next().unwrap();
+    let params = function.get_params().iter().skip(if nothis {1} else {0}).map(|p| get_descriptor_entry(p.get_type().as_any_type_enum(), &mut extra_info_getter)).collect();
+    let return_ty = function.get_type().get_return_type().map(|t| get_descriptor_entry(t.as_any_type_enum(), &mut extra_info_getter));
     return MethodDescriptor(params, return_ty);
 }
 
-fn get_descriptor_entry(v: AnyTypeEnum<'_>) -> DescriptorEntry {
+fn get_descriptor_entry(v: AnyTypeEnum<'_>, get_extra_info: &mut impl FnMut() -> String) -> DescriptorEntry {
     match v {
         AnyTypeEnum::ArrayType(_) => todo!(),
         AnyTypeEnum::FloatType(float_type) => match unsafe {LLVMGetTypeKind(float_type.as_type_ref())} {
@@ -120,7 +128,13 @@ fn get_descriptor_entry(v: AnyTypeEnum<'_>) -> DescriptorEntry {
             33..=64 => DescriptorEntry::Long,
             _ => todo!()
         },
-        AnyTypeEnum::PointerType(_) => DescriptorEntry::Class("java/lang/Object".into()),
+        AnyTypeEnum::PointerType(pty) => {
+            if pty.get_address_space() == 1.into() {
+                return DescriptorEntry::Class(get_extra_info());
+            }
+            // TODO should prolly depend on the memory allocator
+            DescriptorEntry::Class("java/lang/Object".into())
+        },
         AnyTypeEnum::StructType(_) => todo!(),
         AnyTypeEnum::VectorType(_) => todo!(),
         AnyTypeEnum::ScalableVectorType(_) => todo!(),
@@ -362,10 +376,23 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
             if let Some(handler) = get_instrinsic_handler(f.get_name()) {
                 handler();
             } else {
-                memory::MemorySegmentEmitter::pre_call(e);
-                let loc = e.g.name_mapper.get_java_location(f.get_name().to_str().unwrap());
-                v.get_operands().take((v.get_num_operands()-1) as usize).for_each(|o| load_operand(o, e));
-                e.java_method.emit_invokestatic(loc.class, loc.name, get_descriptor(&f));
+                let name = f.get_name().to_str().unwrap();
+                // Test for special syntax to use `new`
+                if let Some(target) = e.g.name_mapper.is_special_new_function(name) {
+                    e.java_method.emit_new(target);
+                } else {
+                    dbg!(&name);
+                    let loc = e.g.name_mapper.get_java_location(name);
+                    // If the java code is guaranteed never to enter back into our code we can technically omit this
+                    memory::MemorySegmentEmitter::pre_call(e);
+                    // Load operands
+                    v.get_operands().take((v.get_num_operands()-1) as usize).for_each(|o| load_operand(o, e));
+                    match loc.ty {
+                        FunctionType::Special => e.java_method.emit_invokespecial(loc.class, loc.name, get_descriptor(&f, loc.extra_type_info, true)),
+                        FunctionType::Virtual => e.java_method.emit_invokevirtual(loc.class, loc.name, get_descriptor(&f, loc.extra_type_info, true)),
+                        FunctionType::Static => e.java_method.emit_invokestatic(loc.class, loc.name, get_descriptor(&f, loc.extra_type_info, false)),
+                    }
+                }
             }
         }
         _ => todo!("{v:#?}")
