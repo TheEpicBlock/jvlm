@@ -287,7 +287,7 @@ def parse_test_declaration(declaration: str) -> list[Callable[[Path], Failure | 
 				else:
 					expect = nLine.removeprefix("expect").strip()
 				def run_test(p: Path) -> Failure | None:
-					r = exec([JSHELL, "-c", p, "-"], input=f"System.out.println({run_str})", return_output=True, timeout=300)
+					r = exec([JSHELL, "--enable-preview", "-c", p, "-"], input=f"System.out.println({run_str})", return_output=True, timeout=300)
 					if isinstance(r, Failure):
 						return r
 					else:
