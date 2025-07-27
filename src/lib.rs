@@ -4,7 +4,7 @@
 use std::{collections::HashMap, io::{Seek, Write}, mem::ManuallyDrop};
 
 use classfile::{descriptor::{DescriptorEntry, MethodDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
-use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
+use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef, IntType}, values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, InstructionOpcode, InstructionValue, IntValue}, Either};
 use llvm_intrinsics::get_instrinsic_handler;
 use llvm_sys::target::LLVMGetModuleDataLayout;
 use memory::{MemoryInstructionEmitter, MemorySegmentStrategy, MemoryStrategy};
@@ -148,7 +148,11 @@ fn translate<'ctx, W: Write>(v: AnyValueEnum<'ctx>, e: &mut FunctionTranslationC
             if let Some(instr) = int_value.as_instruction() {
                 translate_instruction(instr, e);
             } else if int_value.is_const() {
-                e.java_method.emit_constant_int(int_value.get_sign_extended_constant().unwrap() as i32);
+                match get_int_representation(int_value.get_type()) {
+                    IntRepresentation::JavaInt => e.java_method.emit_constant_int(int_value.get_sign_extended_constant().unwrap() as i32),
+                    IntRepresentation::JavaLong => e.java_method.emit_constant_long(int_value.get_sign_extended_constant().unwrap() as i64),
+                    IntRepresentation::BigInteger => todo!(),
+                }
             } else {
                 todo!("can't handle {int_value}")
             }
@@ -209,13 +213,37 @@ fn get_java_type_or_none(v: AnyTypeEnum<'_>) -> Option<JavaType> {
         AnyTypeEnum::ArrayType(_) => Some(JavaType::Reference),
         AnyTypeEnum::FloatType(_) => Some(JavaType::Float),
         AnyTypeEnum::FunctionType(_) => todo!(),
-        AnyTypeEnum::IntType(_) => Some(JavaType::Int),
+        AnyTypeEnum::IntType(ty) => {
+            match get_int_representation(ty) {
+                IntRepresentation::JavaInt => Some(JavaType::Int),
+                IntRepresentation::JavaLong => Some(JavaType::Long),
+                IntRepresentation::BigInteger => Some(JavaType::Reference),
+            }
+        },
         AnyTypeEnum::PointerType(_) => Some(JavaType::Reference),
         AnyTypeEnum::StructType(_) => Some(JavaType::Reference),
         AnyTypeEnum::VectorType(_) => todo!(),
         AnyTypeEnum::ScalableVectorType(_) => todo!(),
         AnyTypeEnum::VoidType(_) => None,
     }
+}
+
+/// Gets the correct representation for an llvm integer type in java
+fn get_int_representation(ty: IntType) -> IntRepresentation {
+    match ty.get_bit_width() {
+        0..=32 => IntRepresentation::JavaInt,
+        33..=64 => IntRepresentation::JavaLong,
+        _ => IntRepresentation::BigInteger,
+    }
+}
+
+pub enum IntRepresentation {
+    /// The number is represented using a java integer
+    JavaInt,
+    /// The number is represented using a java long
+    JavaLong,
+    /// The number is represented using a java BigInteger
+    BigInteger,
 }
 
 /// Translates llvm instructions. Inputs/outputs are done via the java stack
