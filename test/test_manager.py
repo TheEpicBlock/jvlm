@@ -107,7 +107,7 @@ def exec(args: list[str | Path], return_output: bool = False, cwd: str | bytes |
 		if r.returncode != 0:
 			return StatusCodeFailure(str(args[0]), r.returncode, r.stdout, r.stderr)
 		if return_output:
-			return r.stdout.decode(errors="replace")
+			return r.stdout.decode(errors="replace") + r.stderr.decode(errors="replace")
 		else:
 			return None
 	except subprocess.TimeoutExpired:
@@ -281,13 +281,17 @@ def parse_test_declaration(declaration: str) -> list[Callable[[Path], Failure | 
 						return None
 				tests.append(run_test)
 			elif nLine.startswith("expect"):
-				expect = nLine.removeprefix("expect").strip()
+				contains = nLine.startswith("expect_contains")
+				if contains:
+					expect = nLine.removeprefix("expect_contains").strip()
+				else:
+					expect = nLine.removeprefix("expect").strip()
 				def run_test(p: Path) -> Failure | None:
 					r = exec([JSHELL, "-c", p, "-"], input=f"System.out.println({run_str})", return_output=True, timeout=300)
 					if isinstance(r, Failure):
 						return r
 					else:
-						if r.strip() != expect:
+						if (not contains and r.strip() != expect) or (contains and (not expect in r.strip())):
 							return AssertFailure(expect, r.strip())
 						else:
 							return None
