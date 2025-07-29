@@ -66,6 +66,7 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
 
     for global in llvm_ir.get_globals() {
         // Check annotations
+        let mut no_field = false;
         if let Some(annotation) = parsed_annotations.get(&global.as_pointer_value()) {
             // TODO allow including as resource without specifying the location
             if let Some(target) = annotation.strip_prefix("jvlm::include_as_resource(") {
@@ -73,9 +74,10 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
                 let target = target.strip_suffix(")").expect("Expected closing bracket after jvlm::include_as_resource");
                 out.start_file(target, SimpleFileOptions::default().last_modified_time(DateTime::default())).unwrap();
                 out.write_all(global.get_initializer().unwrap().into_array_value().as_const_string().unwrap()).unwrap();
+                no_field = true; // Don't generate a field for this one
             }
         }
-        if !global.is_declaration() && !global.get_section().is_some_and(|name| name.equals(b"llvm.metadata")) {
+        if !global.is_declaration() && !global.get_section().is_some_and(|name| name.equals(b"llvm.metadata")) && !no_field {
             // We're the ones defining this global, so we need to generate a field in the class
             let location = options.name_mapper.get_static_field_location(global.get_name().to_str().unwrap());
             class_plans
