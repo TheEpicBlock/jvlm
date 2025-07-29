@@ -29,7 +29,7 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
     if let Some(annotation) = annotation {
         let annotation = annotation.get_initializer().unwrap().into_array_value();
         for i in 0..(annotation.get_type().len()) {
-            let annotation_struct = unsafe { AnyValueEnum::new(LLVMGetAggregateElement(annotation.as_value_ref(), 0))}.into_struct_value();
+            let annotation_struct = unsafe { AnyValueEnum::new(LLVMGetAggregateElement(annotation.as_value_ref(), i))}.into_struct_value();
             let annotation_target = unsafe { AnyValueEnum::new(LLVMGetAggregateElement(annotation_struct.as_value_ref(), 0))}.into_pointer_value();
             let annotation_content = unsafe { GlobalValue::new(LLVMGetAggregateElement(annotation_struct.as_value_ref(), 1))};
             let annotation_content = CString::from_vec_with_nul(annotation_content.get_initializer().unwrap().into_array_value().as_const_string().unwrap().into()).unwrap().into_string().unwrap();
