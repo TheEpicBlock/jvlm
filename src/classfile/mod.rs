@@ -19,6 +19,7 @@ pub struct ClassFileWriter<W: Write> {
     super_ref: ConstantPoolReference,
     constant_pool: ConstantPool,
     methods: Vec<MethodData>,
+    fields: Vec<FieldData>,
 }
 
 impl <W> ClassFileWriter<W> where W: Write + WriteBytesExt {
@@ -34,7 +35,8 @@ impl <W> ClassFileWriter<W> where W: Write + WriteBytesExt {
             access_flag,
             this_ref,
             super_ref,
-            methods: Vec::new()
+            methods: Vec::new(),
+            fields: Vec::new(),
         };
         w.write_header()?;
         return Ok(w);
@@ -74,18 +76,31 @@ impl <W> ClassFileWriter<W> where W: Write + WriteBytesExt {
         };
     }
 
+    pub fn write_field(&mut self, metadata: FieldData) {
+        self.fields.push(metadata);
+    }
+
     pub fn finalize(mut self) -> W {
+        let field_names = self.fields.iter().map(|f| self.constant_pool.utf8(f.name.to_owned())).collect::<Vec<_>>();
+        let field_descriptors = self.fields.iter().map(|f| self.constant_pool.utf8(f.descriptor.to_string())).collect::<Vec<_>>();
         let code_attr = self.constant_pool.utf8("Code".into());
         let stack_map_table_attr = self.methods.iter()
             .any(|m| m.needs_stack_map_table())
             .then(|| self.constant_pool.utf8("StackMapTable".into()));
         let out = self.output.as_mut().unwrap();
+
         self.constant_pool.serialize(out).unwrap();
         out.write_u16::<byteorder::BigEndian>(self.access_flag).unwrap();
         out.write_u16::<byteorder::BigEndian>(self.this_ref).unwrap();
         out.write_u16::<byteorder::BigEndian>(self.super_ref).unwrap();
         out.write_u16::<byteorder::BigEndian>(0).unwrap(); // No interfaces
-        out.write_u16::<byteorder::BigEndian>(0).unwrap(); // No fields
+        out.write_u16::<byteorder::BigEndian>(self.fields.len() as u16).unwrap();
+        for (field, (name, descriptor)) in Iterator::zip(self.fields.iter(), Iterator::zip(field_names.iter(), field_descriptors.iter())) {
+            out.write_u16::<byteorder::BigEndian>(field.get_access_flag()).unwrap();
+            out.write_u16::<byteorder::BigEndian>(*name).unwrap();
+            out.write_u16::<byteorder::BigEndian>(*descriptor).unwrap();
+            out.write_u16::<byteorder::BigEndian>(0).unwrap(); // No attributes
+        }
         out.write_u16::<byteorder::BigEndian>(self.methods.len() as u16).unwrap();
         for m in &self.methods {
             m.serialize(out, code_attr, stack_map_table_attr).unwrap();
@@ -122,6 +137,36 @@ impl ClassMetadata {
         if self.is_annotation { flag |= 0x2000 };
         if self.is_enum       { flag |= 0x4000 };
         if self.is_module     { flag |= 0x8000 };
+        return flag;
+    }
+}
+
+pub struct FieldData {
+    pub is_public: bool,
+    pub is_private: bool,
+    pub is_protected: bool,
+    pub is_static: bool,
+    pub is_final: bool,
+    pub is_volatile: bool,
+    pub is_transient: bool,
+    pub is_synthetic: bool,
+    pub is_enum: bool,
+    pub name: String,
+    pub descriptor: FieldDescriptor,
+}
+
+impl FieldData {
+    fn get_access_flag(&self) -> u16 {
+        let mut flag = 0;
+        if self.is_public     { flag |= 0x0001 };
+        if self.is_private    { flag |= 0x002 };
+        if self.is_protected  { flag |= 0x0004 };
+        if self.is_static     { flag |= 0x0008 };
+        if self.is_final      { flag |= 0x0010 };
+        if self.is_volatile   { flag |= 0x0020 };
+        if self.is_transient  { flag |= 0x0080 };
+        if self.is_synthetic  { flag |= 0x1000 };
+        if self.is_enum       { flag |= 0x4000 };
         return flag;
     }
 }

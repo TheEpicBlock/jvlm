@@ -1,13 +1,13 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
-use std::{collections::HashMap, ffi::CString, io::{Seek, Write}, mem::ManuallyDrop};
+use std::{collections::{HashMap, HashSet}, ffi::CString, io::{Seek, Write}, mem::ManuallyDrop};
 
-use classfile::{descriptor::{DescriptorEntry, MethodDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
+use classfile::{descriptor::{DescriptorEntry, MethodDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, FieldData, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
 use cstr_ops::CStrExt;
-use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef, IntType}, values::{AggregateValue, AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, StructValue}, AddressSpace, Either};
+use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef, IntType, PointerType}, values::{AggregateValue, AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, StructValue}, AddressSpace, Either};
 use llvm_intrinsics::get_instrinsic_handler;
-use llvm_sys::{core::{LLVMGetAggregateElement, LLVMIsAConstantArray, LLVMIsAGlobalValue}, debuginfo::LLVMDITypeGetFlags, target::LLVMGetModuleDataLayout};
+use llvm_sys::{core::{LLVMGetAggregateElement, LLVMGetPointerAddressSpace, LLVMIsAConstantArray, LLVMIsAGlobalValue, LLVMTypeOf}, debuginfo::LLVMDITypeGetFlags, target::LLVMGetModuleDataLayout};
 use memory::{MemoryInstructionEmitter, MemorySegmentStrategy, MemoryStrategy};
 use options::{ExtraTypeInfo, FunctionNameMapper, FunctionType, JvlmCompileOptions};
 use zip::{write::SimpleFileOptions, DateTime, ZipWriter};
@@ -44,7 +44,10 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
 
     let mut out = ZipWriter::new(out);
     
-    let mut methods_per_class = HashMap::<String, Vec<(String, ExtraTypeInfo, FunctionValue)>>::default();
+    // First, we must determine which functions/globals are going to go into which java classes.
+    // To do this, we create a plan for each class
+    let mut class_plans = HashMap::<String, ClassPlan>::default();
+
     for f in llvm_ir.get_functions() {
         // Don't generate code for functions that don't have code (external function declarations)
         if f.get_basic_blocks().len() == 0 { continue; }
@@ -55,11 +58,34 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
         } else if location.ty != FunctionType::Static {
             panic!("Can not yet emit non-static functions");
         }
-        methods_per_class
+        class_plans
             .entry(location.class)
-            .or_insert_with(|| vec![])
-            .push((location.name, location.extra_type_info, f));
+            .or_insert_with(|| ClassPlan::default())
+            .methods.push((location.name, location.extra_type_info, f));
     }
+
+    for global in llvm_ir.get_globals() {
+        // Check annotations
+        if let Some(annotation) = parsed_annotations.get(&global.as_pointer_value()) {
+            // TODO allow including as resource without specifying the location
+            if let Some(target) = annotation.strip_prefix("jvlm::include_as_resource(") {
+                // The user specified this global should be included as a file inside of the jar. Lets do so
+                let target = target.strip_suffix(")").expect("Expected closing bracket after jvlm::include_as_resource");
+                out.start_file(target, SimpleFileOptions::default().last_modified_time(DateTime::default())).unwrap();
+                out.write_all(global.get_initializer().unwrap().into_array_value().as_const_string().unwrap()).unwrap();
+            }
+        }
+        if !global.is_declaration() && !global.get_section().is_some_and(|name| name.equals(b"llvm.metadata")) {
+            // We're the ones defining this global, so we need to generate a field in the class
+            let location = options.name_mapper.get_static_field_location(global.get_name().to_str().unwrap());
+            class_plans
+                .entry(location.class)
+                .or_insert_with(|| ClassPlan::default())
+                .fields.push((location.name, location.extra_type_info, global));
+        }
+    }
+
+    // Now we're ready to start generating these classes
 
     // SAFETY: result should not be dropped
     let target_data = unsafe { ManuallyDrop::new(TargetData::new(LLVMGetModuleDataLayout(llvm_ir.as_mut_ptr()))) };
@@ -67,8 +93,8 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
         target_data: target_data,
         name_mapper: Box::new(options.name_mapper),
     };
-    
-    for (class, methods) in methods_per_class {
+
+    for (class, plan) in class_plans {
         out.start_file(format!("{class}.class"), SimpleFileOptions::default().last_modified_time(DateTime::default())).unwrap();
 
         let class_meta = ClassMetadata {
@@ -84,7 +110,7 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
             super_class: "java/lang/Object".to_owned(),
         };
         let mut class_output = ClassFileWriter::write_classfile(out, class_meta).unwrap();
-        for (meth_name, type_info, method) in methods {
+        for (meth_name, type_info, method) in plan.methods {
             let method_metadata = MethodMetadata {
                 visibility: classfile::Visibility::PUBLIC,
                 is_static: true,
@@ -102,19 +128,26 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
             let method_output = class_output.write_method(method_metadata);
             translate_method(method, &global_ctx, method_output)
         }
-        out = class_output.finalize();
-    }
-
-    // We support including globals as files inside of the jar, lets find those globals and write them
-    for global in llvm_ir.get_globals() {
-        if let Some(annotation) = parsed_annotations.get(&global.as_pointer_value()) {
-            // TODO allow including as resource without specifying the location
-            if let Some(target) = annotation.strip_prefix("jvlm::include_as_resource(") {
-                let target = target.strip_suffix(")").expect("Expected closing bracket after jvlm::include_as_resource");
-                out.start_file(target, SimpleFileOptions::default().last_modified_time(DateTime::default())).unwrap();
-                out.write_all(global.get_initializer().unwrap().into_array_value().as_const_string().unwrap()).unwrap();
-            }
+        for (field_name, mut type_info, global) in plan.fields {
+            if type_info.is_none() { continue; } // TODO hack due to not parsing address space correctly
+            // TODO check if the global has an initializer
+            class_output.write_field(FieldData {
+                is_public: true,
+                is_private: false,
+                is_protected: false,
+                is_static: true,
+                is_final: false,
+                is_volatile: false,
+                is_transient: false,
+                is_enum: false,
+                is_synthetic: false,
+                name: field_name,
+                // TODO it seems like globals don't parse their address space correctly?
+                descriptor: DescriptorEntry::Class(type_info.unwrap()),
+                // descriptor: get_descriptor_entry(global.as_pointer_value().get_type().as_any_type_enum(), &mut || type_info.take().unwrap()),
+            });
         }
+        out = class_output.finalize();
     }
 
     // Add any global support classes which are needed for memory management
@@ -123,6 +156,13 @@ pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileO
     memory_manager.append_support_classes(&mut out).unwrap();
 
     out.finish().unwrap();
+}
+
+/// A skeleton of a yet-to-be-generated class
+#[derive(Default)]
+struct ClassPlan<'a> {
+    pub methods: Vec<(String, ExtraTypeInfo, FunctionValue<'a>)>,
+    pub fields: Vec<(String, Option<String>, GlobalValue<'a>)>,
 }
 
 fn translate_method<W: Write>(f: FunctionValue<'_>, global_ctx: &GlobalTranslationCtx, method_writer: MethodWriter<'_, W>) {
@@ -400,7 +440,7 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
                 let mut loc = e.g.name_mapper.get_static_field_location(name);
                 // load value
                 load_operand(v.get_operand(0), e);
-                e.java_method.emit_getstatic(loc.class, loc.name, get_descriptor_entry(ty.as_any_type_enum(), &mut || loc.extra_type_info.take().unwrap()));
+                e.java_method.emit_putstatic(loc.class, loc.name, get_descriptor_entry(ty.as_any_type_enum(), &mut || loc.extra_type_info.take().unwrap()));
             } else {
                 // load pointer
                 load_operand(v.get_operand(1), e);
