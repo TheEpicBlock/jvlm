@@ -380,15 +380,28 @@ impl <W> MethodWriter<'_, W> where W: Write {
         self.record_push_ty((&ty).into());
     }
 
-    pub fn emit_invokestatic(&mut self, class: impl AsRef<str>, name: impl AsRef<str>, desc: MethodDescriptor) {
+    fn emit_invokestatic_inner(&mut self, class: impl AsRef<str>, name: impl AsRef<str>, desc: MethodDescriptor, is_interface: bool) {
         desc.0.iter().for_each(|_| { self.record_pop(); });
         if let Some(return_type) = &desc.1 {
             self.record_push_ty(return_type.into());
         }
 
-        let method_ref = self.class_writer.constant_pool.methodref(class.as_ref().to_owned(), name.as_ref().to_owned(), desc.to_string());
+        let method_ref = if is_interface {
+            self.class_writer.constant_pool.interfacemethodref(class.as_ref().to_owned(), name.as_ref().to_owned(), desc.to_string())
+        } else {
+            self.class_writer.constant_pool.methodref(class.as_ref().to_owned(), name.as_ref().to_owned(), desc.to_string())
+        };
         self.code().write_u8(0xB8); // invokestatic
         self.code().write_u16(method_ref);
+    }
+
+    pub fn emit_invokestatic(&mut self, class: impl AsRef<str>, name: impl AsRef<str>, desc: MethodDescriptor) {
+        self.emit_invokestatic_inner(class, name, desc, false);
+    }
+
+    /// Emits an invoke static to a method which is declared on an interface
+    pub fn emit_invokestatic_on_interface(&mut self, class: impl AsRef<str>, name: impl AsRef<str>, desc: MethodDescriptor) {
+        self.emit_invokestatic_inner(class, name, desc, true);
     }
 
     pub fn emit_invokevirtual(&mut self, class: impl AsRef<str>, name: impl AsRef<str>, desc: MethodDescriptor) {

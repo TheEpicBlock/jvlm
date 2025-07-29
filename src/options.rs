@@ -45,6 +45,8 @@ pub enum FunctionType {
     Virtual,
     Static,
     Interface,
+    /// A static method on an interface
+    StaticInterface,
 }
 
 #[derive(Default)]
@@ -57,6 +59,7 @@ const JVLM_SPECIAL_SYNTAX: &[(&'static str, FunctionType, bool)] = &[
     ("jvlm_extern_invokespecial__", FunctionType::Special, true),
     ("jvlm_extern_invokevirtual__", FunctionType::Virtual, true),
     ("jvlm_extern_invokeinterface__", FunctionType::Interface, true),
+    ("jvlm_extern_interfacestaticmeth__", FunctionType::StaticInterface, true),
 ];
 
 impl DefaultFunctionNameMapper {

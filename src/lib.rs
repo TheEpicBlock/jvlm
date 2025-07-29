@@ -429,6 +429,7 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
                         FunctionType::Virtual => e.java_method.emit_invokevirtual(loc.class, loc.name, get_descriptor(&f, loc.extra_type_info, true)),
                         FunctionType::Interface => e.java_method.emit_invokeinterface(loc.class, loc.name, get_descriptor(&f, loc.extra_type_info, true)),
                         FunctionType::Static => e.java_method.emit_invokestatic(loc.class, loc.name, get_descriptor(&f, loc.extra_type_info, false)),
+                        FunctionType::StaticInterface => e.java_method.emit_invokestatic_on_interface(loc.class, loc.name, get_descriptor(&f, loc.extra_type_info, false)),
                     }
                 }
             }
