@@ -5,9 +5,9 @@ use std::{collections::HashMap, ffi::CString, io::{Seek, Write}, mem::ManuallyDr
 
 use classfile::{descriptor::{DescriptorEntry, MethodDescriptor}, ClassFileWriter, ClassMetadata, CodeLocation, InstructionTarget, JavaType, LVTi, MethodMetadata, MethodWriter};
 use cstr_ops::CStrExt;
-use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef, IntType}, values::{AggregateValue, AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, StructValue}, Either};
+use inkwell::{basic_block::BasicBlock, llvm_sys::{self, core::LLVMGetTypeKind}, module::Module, targets::TargetData, types::{AnyType, AnyTypeEnum, AsTypeRef, IntType}, values::{AggregateValue, AnyValue, AnyValueEnum, AsValueRef, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, InstructionOpcode, InstructionValue, IntValue, StructValue}, AddressSpace, Either};
 use llvm_intrinsics::get_instrinsic_handler;
-use llvm_sys::{core::{LLVMGetAggregateElement, LLVMIsAConstantArray}, debuginfo::LLVMDITypeGetFlags, target::LLVMGetModuleDataLayout};
+use llvm_sys::{core::{LLVMGetAggregateElement, LLVMIsAConstantArray, LLVMIsAGlobalValue}, debuginfo::LLVMDITypeGetFlags, target::LLVMGetModuleDataLayout};
 use memory::{MemoryInstructionEmitter, MemorySegmentStrategy, MemoryStrategy};
 use options::{ExtraTypeInfo, FunctionNameMapper, FunctionType, JvlmCompileOptions};
 use zip::{write::SimpleFileOptions, DateTime, ZipWriter};
@@ -20,6 +20,11 @@ pub mod options;
 pub mod linker;
 
 pub type LlvmModule<'a> = Module<'a>;
+
+#[allow(non_snake_case)] // It's a constant, we just can't write it because .into isn't constant compatible
+pub fn JAVA_OBJECT_ADDRESS_SPACE() -> AddressSpace {
+    return 1.into();
+}
 
 pub fn compile<FNM>(llvm_ir: Module, out: impl Write+Seek, options: JvlmCompileOptions<FNM>) where FNM: FunctionNameMapper {
     // Read llvm annotations
@@ -156,7 +161,7 @@ fn get_descriptor_entry(v: AnyTypeEnum<'_>, get_extra_info: &mut impl FnMut() ->
             _ => todo!()
         },
         AnyTypeEnum::PointerType(pty) => {
-            if pty.get_address_space() == 1.into() {
+            if pty.get_address_space() == JAVA_OBJECT_ADDRESS_SPACE() {
                 return DescriptorEntry::Class(get_extra_info());
             }
             // TODO should prolly depend on the memory allocator
@@ -388,21 +393,31 @@ fn translate_instruction<'ctx, W: Write>(v: InstructionValue<'ctx>, e: &mut Func
             }
         }
         InstructionOpcode::Store => {
-            // load pointer
-            load_operand(v.get_operand(1), e);
-            memory::MemorySegmentEmitter::store(e, |e| {
+            let ptr = v.get_operand(1).unwrap().unwrap_left().into_pointer_value();
+            let ty = v.get_operand(0).unwrap().unwrap_left().get_type();
+            if ptr.is_const() && ty.is_pointer_type() && ty.into_pointer_type().get_address_space() == JAVA_OBJECT_ADDRESS_SPACE() {
+                let name = ptr.get_name().to_str().unwrap();
+                let mut loc = e.g.name_mapper.get_static_field_location(name);
                 // load value
                 load_operand(v.get_operand(0), e);
-            }, v.get_operand(0).unwrap().unwrap_left().get_type().as_any_type_enum());
+                e.java_method.emit_getstatic(loc.class, loc.name, get_descriptor_entry(ty.as_any_type_enum(), &mut || loc.extra_type_info.take().unwrap()));
+            } else {
+                // load pointer
+                load_operand(v.get_operand(1), e);
+                memory::MemorySegmentEmitter::store(e, |e| {
+                    // load value
+                    load_operand(v.get_operand(0), e);
+                }, v.get_operand(0).unwrap().unwrap_left().get_type().as_any_type_enum());
+            }
         }
         InstructionOpcode::Load => {
-            // load pointer
             let ptr = v.get_operand(0).unwrap().unwrap_left().into_pointer_value();
-            if ptr.is_const() {
+            if ptr.is_const() && v.get_type().into_pointer_type().get_address_space() == JAVA_OBJECT_ADDRESS_SPACE() {
                 let name = ptr.get_name().to_str().unwrap();
                 let mut loc = e.g.name_mapper.get_static_field_location(name);
                 e.java_method.emit_getstatic(loc.class, loc.name, get_descriptor_entry(v.get_type(), &mut || loc.extra_type_info.take().unwrap()));
             } else {
+                // load pointer
                 load_operand(v.get_operand(0), e);
                 memory::MemorySegmentEmitter::load(e, v.get_type());
             }

@@ -373,6 +373,13 @@ impl <W> MethodWriter<'_, W> where W: Write {
         };
     }
 
+    pub fn emit_putstatic(&mut self, class: impl AsRef<str>, field: impl AsRef<str>, ty: FieldDescriptor) {
+        let field_ref = self.class_writer.constant_pool.fieldref(class.as_ref().to_owned(), field.as_ref().to_owned(), ty.to_string());
+        self.code().write_u8(0xB3); // putstatic
+        self.code().write_u16(field_ref);
+        self.record_push_ty((&ty).into());
+    }
+
     pub fn emit_getstatic(&mut self, class: impl AsRef<str>, field: impl AsRef<str>, ty: FieldDescriptor) {
         let field_ref = self.class_writer.constant_pool.fieldref(class.as_ref().to_owned(), field.as_ref().to_owned(), ty.to_string());
         self.code().write_u8(0xB2); // getstatic
